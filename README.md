@@ -5,12 +5,18 @@ Disclaimer
 -this is my first github repository so please message me with any feedback on how I can improve upon my work or the way I uploaded my work! :)
 
 REQUIREMENTS
--Must have youtube-dl downloaded (https://github.com/ytdl-org/youtube-dl/blob/master/README.md#readme)
-
+- Must have youtube-dl downloaded (https://github.com/ytdl-org/youtube-dl/blob/master/README.md#readme)
+- Requires Python and the `yt_dlp` package installed in the project virtualenv
 
 PROCEDURE
-1. Change the homeFolder to the directory that contains individual song folders--these are the songs that the program will download videos inside.
-   For instance, if I want to download videos for all the songs in my Guitar Hero 3 folder, I would change line 17 to 
-   homeFolder = "clonehero-win64\Songs\Guitar Hero 3"
-2. Run the program.  If the homeFolder exists, the top result on YouTube will be downloaded as an .mp4 into the song folder,
-   if the homeFolder doesn't exist, try again with the correct path.
+1. Change the `homeFolder` value in `CH-VideoScript.py` to the directory containing your individual song folders.
+   For example: `homeFolder = "clonehero-win64\Songs\Guitar Hero 3"`
+2. Run the program. If the `homeFolder` exists, the script will:
+   - load the spreadsheet lookup table
+   - auto-download files whose best video match meets or exceeds the confidence threshold
+   - queue low-confidence matches for later review after all folders have been scored
+3. During review, you can choose to download the best low-confidence candidate, skip the song, pick a different result, or enter a custom YouTube URL.
+
+TIP
+- Use `--threshold` to override the default auto-download cutoff.
+- Use `--interactive` to force terminal prompt behavior even if stdin is not a TTY.
