@@ -19,4 +19,6 @@ PROCEDURE
 
 TIP
 - Use `--threshold` to override the default auto-download cutoff.
-- Use `--interactive` to force terminal prompt behavior even if stdin is not a TTY.
+- The script is interactive by default and will prompt for the confidence threshold after sampling rated candidates.
+- Use `--no-interactive` to skip the prompt and use the default threshold.
+- Use `--sample-size` to control how many rated folders are shown before choosing the threshold.

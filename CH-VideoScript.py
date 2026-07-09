@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import os
+import random
 import re
 import sys
 import urllib.request
@@ -184,6 +185,30 @@ def save_video_metadata(song_folder: str, confidence: int, url: str) -> None:
         "url": url,
     }
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+
+def select_random_sample(items: list[dict[str, object]], sample_size: int = 3) -> list[dict[str, object]]:
+    """Return a random sample of items for threshold review."""
+    if sample_size <= 0 or len(items) <= sample_size:
+        return list(items)
+    return random.sample(items, sample_size)
+
+
+def print_sample_confidence(sample_items: list[dict[str, object]]) -> None:
+    """Print a small sample of confidence ratings for interactive threshold selection."""
+    if not sample_items:
+        return
+
+    print("SAMPLE CONFIDENCE RATINGS")
+    print("-" * 70)
+    for item in sample_items:
+        best_match = item.get("best_match") or {}
+        print(f"Folder: {item['folder']}")
+        print(f"  Query: {item['query']}")
+        print(f"  Best match: {best_match.get('title', 'N/A')}")
+        print(f"  Confidence: {item['confidence']}/100")
+        print(f"  Reason: {best_match.get('reason', 'no reason')}")
+        print()
 
 
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1QJ7wotWFoNNSwzIIIAGRcf4WAaYz1pXjhljYSk5h9DI/export?format=csv&gid=0"
@@ -385,14 +410,22 @@ def calculate_confidence(video_title: str, search_artist: str, search_title: str
     return score, reason_str
 
 
-def prompt_confidence_threshold(default: int = 70, interactive: bool = False) -> int:
+def prompt_confidence_threshold(
+    default: int = 70,
+    sample_items: list[dict[str, object]] | None = None,
+    sample_size: int = 3,
+    interactive: bool = False,
+) -> int:
     """Prompt for the confidence threshold, but fall back to the default unless interactivity is explicitly requested."""
+    if sample_items and interactive and sys.stdin.isatty():
+        print_sample_confidence(select_random_sample(sample_items, sample_size=sample_size))
+
     if not interactive or not sys.stdin.isatty():
         print(f"Using default confidence threshold: {default}")
         return default
 
     while True:
-        threshold_input = input("Enter minimum confidence to auto-download without verification (0-100, or press Enter for 70): ").strip()
+        threshold_input = input(f"Enter minimum confidence to auto-download without verification (0-100, or press Enter for {default}): ").strip()
         if threshold_input == "":
             return default
         try:
@@ -425,7 +458,11 @@ def download_video_if_needed(url: str, currentSongFileFolder: str, candidate_con
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download Clone Hero videos based on song folders and spreadsheet metadata.")
     parser.add_argument("--threshold", type=int, default=None, help="Minimum confidence required to auto-download without confirmation.")
-    parser.add_argument("--interactive", action="store_true", help="Prompt for the confidence threshold even in a terminal session.")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--interactive", action="store_true", dest="interactive", help="Prompt for the confidence threshold.")
+    group.add_argument("--no-interactive", action="store_false", dest="interactive", help="Skip the confidence prompt and use the default threshold.")
+    parser.set_defaults(interactive=True)
+    parser.add_argument("--sample-size", type=int, default=3, help="Number of random rated songs to sample before asking for a threshold.")
     return parser.parse_args()
 
 
@@ -464,21 +501,10 @@ def main() -> None:
     print()
 
     args = parse_args()
-    confidence_threshold = prompt_confidence_threshold(default=args.threshold if args.threshold is not None else 70, interactive=args.interactive)
+    default_threshold = args.threshold if args.threshold is not None else 70
 
-    print(f"\nVideos with confidence >= {confidence_threshold} will download automatically.")
-    print(f"Videos with confidence < {confidence_threshold} will require your confirmation after all candidates are rated.")
-    print()
-    print("=" * 70)
-    print()
-
-    # Stats tracking
-    total_songs = 0
-    downloaded = 0
-    skipped = 0
-
-    low_confidence_queue: list[dict[str, object]] = []
-
+    # First pass: rate all song folders without downloading.
+    print("Preparing confidence ratings for all song folders...")
     sheet_rows: list[dict[str, str]] = []
     try:
         sheet_rows = load_sheet_rows()
@@ -486,89 +512,148 @@ def main() -> None:
     except Exception as e:
         print(f"Warning: Unable to load spreadsheet: {e}")
 
-    try:
-        for file in os.listdir():
-            if not os.path.isdir(file):
+    rate_items: list[dict[str, object]] = []
+
+    for file in sorted(os.listdir()):
+        if not os.path.isdir(file):
+            continue
+
+        total_songs += 1
+        artist, title = parse_folder_name(file)
+
+        if artist and title:
+            query = f"{artist} {title}"
+        elif title:
+            query = title
+        else:
+            print(f"Skipping folder (couldn't parse name): {file}")
+            skipped += 1
+            continue
+
+        sheet_match = None
+        if sheet_rows:
+            sheet_match = find_sheet_match(sheet_rows, artist, title)
+            if sheet_match is not None:
+                print(f"Found spreadsheet entry for: {artist} - {title}")
+                print(f"  Offset: {sheet_match.get('Offset', '')}")
+
+        url = None
+        candidate_confidence: int | None = None
+        url_source = "search"
+        currentSongFileFolder = os.path.join(homeFolder, file)
+        candidates: list[dict[str, object]] = []
+        best_match: dict[str, object] = {}
+
+        if sheet_match is not None:
+            url = extract_video_url(sheet_match)
+            if url:
+                candidate_confidence = 95
+                url_source = "spreadsheet"
+                best_match = {
+                    'url': url,
+                    'title': 'Spreadsheet URL',
+                    'confidence': candidate_confidence,
+                    'reason': 'spreadsheet override',
+                }
+                print(f"  Using spreadsheet URL: {url}")
+
+        if url is None:
+            print(f"Searching YouTube for: {query}")
+            candidates = search_youtube_candidates(query, artist, title)
+
+            if not candidates:
+                print(f"No suitable music video found for: {file}")
+                rate_items.append({
+                    'folder': file,
+                    'artist': artist,
+                    'title': title,
+                    'query': query,
+                    'sheet_match': sheet_match,
+                    'best_match': None,
+                    'candidates': [],
+                    'confidence': None,
+                    'url': None,
+                    'url_source': url_source,
+                    'song_folder': currentSongFileFolder,
+                })
                 continue
 
-            total_songs += 1
-            artist, title = parse_folder_name(file)
+            best_match = candidates[0]
+            candidate_confidence = best_match['confidence']
+            url = best_match['url']
 
-            if artist and title:
-                query = f"{artist} {title}"
-            elif title:
-                query = title
-            else:
-                print(f"Skipping folder (couldn't parse name): {file}")
+            print(f"  Best match: {best_match['title']}")
+            print(f"  Confidence: {candidate_confidence}/100 ({best_match['reason']})")
+            print(f"  URL: {url}")
+
+        rate_items.append({
+            'folder': file,
+            'artist': artist,
+            'title': title,
+            'query': query,
+            'sheet_match': sheet_match,
+            'best_match': best_match,
+            'candidates': candidates,
+            'confidence': candidate_confidence,
+            'url': url,
+            'url_source': url_source,
+            'song_folder': currentSongFileFolder,
+        })
+
+    confidence_threshold = prompt_confidence_threshold(
+        default=default_threshold,
+        sample_items=[item for item in rate_items if item.get('confidence') is not None],
+        sample_size=args.sample_size,
+        interactive=args.interactive,
+    )
+
+    print(f"\nVideos with confidence >= {confidence_threshold} will download automatically.")
+    print(f"Videos with confidence < {confidence_threshold} will require your confirmation after all candidates are rated.")
+    print()
+    print("=" * 70)
+    print()
+
+    if not rate_items:
+        print("No songs available to rate. Exiting.")
+        return
+
+    # Stats tracking
+    downloaded = 0
+    skipped = skipped
+
+    low_confidence_queue: list[dict[str, object]] = []
+
+    try:
+        for item in rate_items:
+            if item['confidence'] is None or item['url'] is None:
+                print(f"Skipping {item['folder']} because no rated video was available.")
                 skipped += 1
                 continue
 
-            sheet_match = None
-            if sheet_rows:
-                sheet_match = find_sheet_match(sheet_rows, artist, title)
-                if sheet_match is not None:
-                    print(f"Found spreadsheet entry for: {artist} - {title}")
-                    print(f"  Offset: {sheet_match.get('Offset', '')}")
+            print(f"Processing {item['folder']}")
+            currentSongFileFolder = item['song_folder']
+            candidate_confidence = item['confidence']
+            url = item['url']
+            sheet_match = item['sheet_match']
 
-            url = None
-            candidate_confidence: int | None = None
-            url_source = "search"
-            currentSongFileFolder = os.path.join(homeFolder, file)
+            if candidate_confidence < confidence_threshold:
+                print(f"  ⚠️  Candidate below threshold ({candidate_confidence} < {confidence_threshold})")
+                print(f"  Song: {item['artist']} - {item['title']}" if item['artist'] else f"  Song: {item['title']}")
+                print("  Top candidates:")
+                for i, cand in enumerate(item['candidates'], 1):
+                    print(f"    {i}. [{cand['confidence']}%] {cand['title']}")
+                print()
+                low_confidence_queue.append(item)
+                continue
 
-            if sheet_match is not None:
-                url = extract_video_url(sheet_match)
-                if url:
-                    candidate_confidence = 95
-                    url_source = "spreadsheet"
-                    print(f"  Using spreadsheet URL: {url}")
-
-            if url is None:
-                print(f"Searching YouTube for: {query}")
-                candidates = search_youtube_candidates(query, artist, title)
-
-                if not candidates:
-                    print(f"No suitable music video found for: {file}")
-                    skipped += 1
-                    continue
-
-                best_match = candidates[0]
-                candidate_confidence = best_match['confidence']
-                url = best_match['url']
-
-                print(f"  Best match: {best_match['title']}")
-                print(f"  Confidence: {candidate_confidence}/100 ({best_match['reason']})")
-                print(f"  URL: {url}")
-
-                if candidate_confidence < confidence_threshold:
-                    print(f"  ⚠️  Confidence below threshold ({candidate_confidence} < {confidence_threshold})")
-                    print(f"  Song: {artist} - {title}" if artist else f"  Song: {title}")
-                    print("  Top candidates:")
-                    for i, cand in enumerate(candidates, 1):
-                        print(f"    {i}. [{cand['confidence']}%] {cand['title']}")
-                    print()
-                    low_confidence_queue.append({
-                        'folder': file,
-                        'artist': artist,
-                        'title': title,
-                        'query': query,
-                        'sheet_match': sheet_match,
-                        'best_match': best_match,
-                        'candidates': candidates,
-                        'confidence': candidate_confidence,
-                        'url': url,
-                        'url_source': url_source,
-                        'song_folder': currentSongFileFolder,
-                    })
-                    continue
-                else:
-                    print(f"  ✓ High confidence - auto-downloading")
-                    print()
+            print(f"  ✓ High confidence - ready to download")
+            print()
 
             if not os.path.exists(currentSongFileFolder):
                 try:
                     os.makedirs(currentSongFileFolder, exist_ok=True)
                 except Exception as e:
-                    print(f"  ERROR: Cannot access folder {file}: {e}")
+                    print(f"  ERROR: Cannot access folder {item['folder']}: {e}")
                     skipped += 1
                     continue
 
@@ -583,7 +668,7 @@ def main() -> None:
 
             if download_video_if_needed(url, currentSongFileFolder, candidate_confidence):
                 downloaded += 1
-                print(f"Downloaded video for: {file}\n")
+                print(f"Downloaded video for: {item['folder']}\n")
             else:
                 skipped += 1
                 continue
