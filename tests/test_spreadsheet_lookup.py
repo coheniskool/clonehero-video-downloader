@@ -100,3 +100,25 @@ def test_search_youtube_candidates_excludes_difficulty_titles(monkeypatch):
     assert len(candidates) == 1
     assert candidates[0]['url'] == 'https://www.youtube.com/watch?v=def456'
     assert 'Official Video' in candidates[0]['title']
+
+
+def test_search_youtube_candidates_handles_network_error(monkeypatch, capsys):
+    class FailingYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, query, download=False):
+            raise RuntimeError('network failure')
+
+    monkeypatch.setattr(module.yt_dlp, 'YoutubeDL', FailingYDL)
+    candidates = module.search_youtube_candidates('Song Title', 'Artist', 'Song Title', max_results=3)
+    captured = capsys.readouterr()
+
+    assert candidates == []
+    assert "WARNING: YouTube search failed" in captured.out

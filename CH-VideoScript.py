@@ -82,12 +82,18 @@ def search_youtube_candidates(query: str, artist: str, title: str, max_results: 
         'quiet': True,
         'no_warnings': True,
         'extract_flat': True,
+        'socket_timeout': 30,
     }
 
     candidates: list[dict[str, str]] = []
     try:
         with yt_dlp.YoutubeDL(ydl_search_opts) as ydl:
-            info = ydl.extract_info(search_query, download=False)
+            try:
+                info = ydl.extract_info(search_query, download=False)
+            except Exception as exc:
+                print(f"  WARNING: YouTube search failed for '{query}': {exc}")
+                return []
+
             if info and 'entries' in info:
                 for entry in info['entries']:
                     if not entry:
@@ -109,8 +115,9 @@ def search_youtube_candidates(query: str, artist: str, title: str, max_results: 
                         'confidence': confidence,
                         'reason': reason,
                     })
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"  WARNING: Unexpected YouTube search error for '{query}': {exc}")
+        return []
 
     candidates.sort(key=lambda x: x['confidence'], reverse=True)
     return candidates
@@ -506,6 +513,8 @@ def main() -> None:
     # First pass: rate all song folders without downloading.
     print("Preparing confidence ratings for all song folders...")
     sheet_rows: list[dict[str, str]] = []
+    total_songs = 0
+    skipped = 0
     try:
         sheet_rows = load_sheet_rows()
         print(f"Loaded {len(sheet_rows)} spreadsheet rows for matching.")
