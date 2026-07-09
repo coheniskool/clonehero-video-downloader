@@ -6,9 +6,11 @@ import argparse
 import csv
 import io
 import json
+import math
 import os
 import random
 import re
+import statistics
 import sys
 import urllib.request
 from difflib import SequenceMatcher
@@ -51,6 +53,17 @@ _DIFFICULTY_RESULT_RE = re.compile(
 
 VIDEO_FILE_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".flv", ".mp3", ".m4a"}
 VIDEO_METADATA_FILENAME = "video_meta.json"
+search_failures = 0
+
+
+def reset_search_failures() -> None:
+    global search_failures
+    search_failures = 0
+
+
+def increment_search_failures() -> None:
+    global search_failures
+    search_failures += 1
 
 
 def strip_title_noise(title: str) -> str:
@@ -88,12 +101,7 @@ def search_youtube_candidates(query: str, artist: str, title: str, max_results: 
     candidates: list[dict[str, str]] = []
     try:
         with yt_dlp.YoutubeDL(ydl_search_opts) as ydl:
-            try:
-                info = ydl.extract_info(search_query, download=False)
-            except Exception as exc:
-                print(f"  WARNING: YouTube search failed for '{query}': {exc}")
-                return []
-
+            info = ydl.extract_info(search_query, download=False)
             if info and 'entries' in info:
                 for entry in info['entries']:
                     if not entry:
@@ -115,8 +123,11 @@ def search_youtube_candidates(query: str, artist: str, title: str, max_results: 
                         'confidence': confidence,
                         'reason': reason,
                     })
-    except Exception as exc:
-        print(f"  WARNING: Unexpected YouTube search error for '{query}': {exc}")
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as exc:
+        increment_search_failures()
+        print(f"  WARNING: YouTube search failed for '{query}': {exc}")
         return []
 
     candidates.sort(key=lambda x: x['confidence'], reverse=True)
@@ -196,24 +207,107 @@ def save_video_metadata(song_folder: str, confidence: int, url: str) -> None:
 
 def select_random_sample(items: list[dict[str, object]], sample_size: int = 3) -> list[dict[str, object]]:
     """Return a random sample of items for threshold review."""
-    if sample_size <= 0 or len(items) <= sample_size:
+    if sample_size <= 0:
         return list(items)
-    return random.sample(items, sample_size)
+    # Ensure we always return a random selection. If sample_size >= len(items)
+    # use random.sample with k=len(items) which returns a randomized permutation.
+    k = min(sample_size, len(items))
+    return random.sample(items, k)
 
 
-def print_sample_confidence(sample_items: list[dict[str, object]]) -> None:
-    """Print a small sample of confidence ratings for interactive threshold selection."""
+def calculate_cochran_sample_size(
+    population_size: int,
+    confidence_level: float = 0.95,
+    margin_of_error: float = 0.1,
+    proportion: float = 0.5,
+) -> int:
+    """Calculate the Cochran sample size for the given population and confidence interval."""
+    if population_size <= 0:
+        return 0
+
+    z_scores = {
+        0.90: 1.645,
+        0.95: 1.96,
+        0.99: 2.576,
+    }
+    z = z_scores.get(confidence_level, 1.96)
+    q = 1.0 - proportion
+    n0 = (z**2 * proportion * q) / (margin_of_error**2)
+
+    if population_size <= n0:
+        corrected = n0 / (1 + ((n0 - 1) / population_size))
+    else:
+        corrected = n0
+
+    return min(population_size, max(1, math.ceil(corrected)))
+
+
+def summarize_confidence_statistics(confidence_values: list[int]) -> dict[str, object]:
+    """Return descriptive statistics for a list of confidence scores."""
+    if not confidence_values:
+        return {
+            'count': 0,
+            'mean': 0.0,
+            'median': 0.0,
+            'mode': 'n/a',
+            'std_dev': 0.0,
+            'min': 0,
+            'max': 0,
+        }
+
+    try:
+        mode_value = statistics.mode(confidence_values)
+    except statistics.StatisticsError:
+        mode_value = 'multiple'
+
+    std_dev = statistics.stdev(confidence_values) if len(confidence_values) > 1 else 0.0
+    return {
+        'count': len(confidence_values),
+        'mean': statistics.mean(confidence_values),
+        'median': statistics.median(confidence_values),
+        'mode': mode_value,
+        'std_dev': std_dev,
+        'min': min(confidence_values),
+        'max': max(confidence_values),
+    }
+
+
+def print_sample_confidence(sample_items: list[dict[str, object]], population_size: int, sample_size: int) -> None:
+    """Print a sample of confidence ratings with statistics for threshold selection."""
     if not sample_items:
         return
 
-    print("SAMPLE CONFIDENCE RATINGS")
+    # Collect numeric confidences while ignoring None or invalid values
+    confidence_values: list[int] = []
+    for item in sample_items:
+        try:
+            val = item.get('confidence')
+            if val is None:
+                continue
+            confidence_values.append(int(val))
+        except (TypeError, ValueError):
+            continue
+
+    stats = summarize_confidence_statistics(confidence_values)
+
+    print(f"Sampling {len(sample_items)} of {population_size} rated videos for threshold guidance.")
+    print("Cochran sample size estimate for 95% confidence interval used to select the sample.")
+    print("Confidence summary:")
+    print(f"  Mean confidence: {stats['mean']:.1f}")
+    print(f"  Median confidence: {stats['median']:.1f}")
+    print(f"  Mode confidence: {stats['mode']}")
+    print(f"  Std dev: {stats['std_dev']:.1f}")
+    print(f"  Range: {stats['min']} - {stats['max']}")
     print("-" * 70)
+
     for item in sample_items:
         best_match = item.get("best_match") or {}
+        conf = item.get('confidence')
+        conf_display = f"{conf}/100" if conf is not None else "N/A"
         print(f"Folder: {item['folder']}")
-        print(f"  Query: {item['query']}")
+        print(f"  Query: {item.get('query', '')}")
         print(f"  Best match: {best_match.get('title', 'N/A')}")
-        print(f"  Confidence: {item['confidence']}/100")
+        print(f"  Confidence: {conf_display}")
         print(f"  Reason: {best_match.get('reason', 'no reason')}")
         print()
 
@@ -420,12 +514,19 @@ def calculate_confidence(video_title: str, search_artist: str, search_title: str
 def prompt_confidence_threshold(
     default: int = 70,
     sample_items: list[dict[str, object]] | None = None,
-    sample_size: int = 3,
+    sample_size: int = 0,
     interactive: bool = False,
 ) -> int:
     """Prompt for the confidence threshold, but fall back to the default unless interactivity is explicitly requested."""
     if sample_items and interactive and sys.stdin.isatty():
-        print_sample_confidence(select_random_sample(sample_items, sample_size=sample_size))
+        total_rated = len(sample_items)
+        target_sample_size = calculate_cochran_sample_size(total_rated)
+        if sample_size > 0:
+            target_sample_size = min(target_sample_size, sample_size)
+
+        actual_sample_size = min(total_rated, target_sample_size)
+        sampled_items = select_random_sample(sample_items, sample_size=actual_sample_size)
+        print_sample_confidence(sampled_items, population_size=total_rated, sample_size=actual_sample_size)
 
     if not interactive or not sys.stdin.isatty():
         print(f"Using default confidence threshold: {default}")
@@ -469,7 +570,12 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("--interactive", action="store_true", dest="interactive", help="Prompt for the confidence threshold.")
     group.add_argument("--no-interactive", action="store_false", dest="interactive", help="Skip the confidence prompt and use the default threshold.")
     parser.set_defaults(interactive=True)
-    parser.add_argument("--sample-size", type=int, default=3, help="Number of random rated songs to sample before asking for a threshold.")
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=0,
+        help="Maximum number of rated songs to sample before asking for a threshold; Cochran's 95%% CI formula determines the ideal sample size when this is 0.",
+    )
     return parser.parse_args()
 
 
@@ -509,6 +615,7 @@ def main() -> None:
 
     args = parse_args()
     default_threshold = args.threshold if args.threshold is not None else 70
+    reset_search_failures()
 
     # First pass: rate all song folders without downloading.
     print("Preparing confidence ratings for all song folders...")
@@ -521,35 +628,63 @@ def main() -> None:
     except Exception as e:
         print(f"Warning: Unable to load spreadsheet: {e}")
 
-    rate_items: list[dict[str, object]] = []
-
+    # Collect folder entries first (no network calls) so we can sample before rating
+    folder_entries: list[dict[str, object]] = []
     for file in sorted(os.listdir()):
         if not os.path.isdir(file):
             continue
 
-        total_songs += 1
         artist, title = parse_folder_name(file)
 
-        if artist and title:
-            query = f"{artist} {title}"
-        elif title:
-            query = title
-        else:
+        if not artist and not title:
             print(f"Skipping folder (couldn't parse name): {file}")
             skipped += 1
             continue
 
+        if artist and title:
+            query = f"{artist} {title}"
+        else:
+            query = title
+
+        # Defer spreadsheet matching until after sampling and threshold selection
         sheet_match = None
-        if sheet_rows:
-            sheet_match = find_sheet_match(sheet_rows, artist, title)
-            if sheet_match is not None:
-                print(f"Found spreadsheet entry for: {artist} - {title}")
-                print(f"  Offset: {sheet_match.get('Offset', '')}")
+
+        folder_entries.append({
+            'folder': file,
+            'artist': artist,
+            'title': title,
+            'query': query,
+            'sheet_match': sheet_match,
+            'song_folder': os.path.join(homeFolder, file),
+        })
+
+    # Population size for sampling
+    population_size = len(folder_entries)
+    total_songs = population_size + skipped
+
+    # Determine sample size (Cochran estimate unless user provided)
+    if args.sample_size and args.sample_size > 0:
+        target_sample_size = min(population_size, args.sample_size)
+    else:
+        target_sample_size = calculate_cochran_sample_size(population_size)
+
+    actual_sample_size = min(population_size, target_sample_size)
+
+    sampled_entries = select_random_sample(folder_entries, sample_size=actual_sample_size)
+
+    # Rate only the sampled entries to guide threshold selection
+    sampled_items: list[dict[str, object]] = []
+    for entry in sampled_entries:
+        file = entry['folder']
+        artist = entry['artist']
+        title = entry['title']
+        query = entry['query']
+        sheet_match = entry['sheet_match']
+        currentSongFileFolder = entry['song_folder']
 
         url = None
         candidate_confidence: int | None = None
-        url_source = "search"
-        currentSongFileFolder = os.path.join(homeFolder, file)
+        url_source = 'search'
         candidates: list[dict[str, object]] = []
         best_match: dict[str, object] = {}
 
@@ -557,45 +692,31 @@ def main() -> None:
             url = extract_video_url(sheet_match)
             if url:
                 candidate_confidence = 95
-                url_source = "spreadsheet"
+                url_source = 'spreadsheet'
                 best_match = {
                     'url': url,
                     'title': 'Spreadsheet URL',
                     'confidence': candidate_confidence,
                     'reason': 'spreadsheet override',
                 }
-                print(f"  Using spreadsheet URL: {url}")
 
         if url is None:
-            print(f"Searching YouTube for: {query}")
-            candidates = search_youtube_candidates(query, artist, title)
+            print(f"Sampling search YouTube for: {query}")
+            try:
+                candidates = search_youtube_candidates(query, artist, title)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as exc:
+                increment_search_failures()
+                print(f"  WARNING: YouTube search failed for '{query}': {exc}")
+                candidates = []
 
-            if not candidates:
-                print(f"No suitable music video found for: {file}")
-                rate_items.append({
-                    'folder': file,
-                    'artist': artist,
-                    'title': title,
-                    'query': query,
-                    'sheet_match': sheet_match,
-                    'best_match': None,
-                    'candidates': [],
-                    'confidence': None,
-                    'url': None,
-                    'url_source': url_source,
-                    'song_folder': currentSongFileFolder,
-                })
-                continue
+            if candidates:
+                best_match = candidates[0]
+                candidate_confidence = best_match['confidence']
+                url = best_match['url']
 
-            best_match = candidates[0]
-            candidate_confidence = best_match['confidence']
-            url = best_match['url']
-
-            print(f"  Best match: {best_match['title']}")
-            print(f"  Confidence: {candidate_confidence}/100 ({best_match['reason']})")
-            print(f"  URL: {url}")
-
-        rate_items.append({
+        sampled_items.append({
             'folder': file,
             'artist': artist,
             'title': title,
@@ -609,12 +730,29 @@ def main() -> None:
             'song_folder': currentSongFileFolder,
         })
 
+    # Show sample statistics and prompt for threshold
+    print_sample_confidence(sampled_items, population_size=population_size, sample_size=actual_sample_size)
+
     confidence_threshold = prompt_confidence_threshold(
         default=default_threshold,
-        sample_items=[item for item in rate_items if item.get('confidence') is not None],
-        sample_size=args.sample_size,
+        sample_items=None,
+        sample_size=0,
         interactive=args.interactive,
     )
+
+    # Run spreadsheet indexing AFTER sampling and after the user has selected a threshold.
+    # This gives the user a chance to choose threshold before spreadsheet overrides
+    # are applied to downloads.
+    if sheet_rows:
+        for entry in folder_entries:
+            try:
+                match = find_sheet_match(sheet_rows, entry['artist'], entry['title'])
+            except Exception:
+                match = None
+            if match is not None:
+                entry['sheet_match'] = match
+                print(f"Found spreadsheet entry for: {entry['artist']} - {entry['title']}")
+                print(f"  Offset: {match.get('Offset', '')}")
 
     print(f"\nVideos with confidence >= {confidence_threshold} will download automatically.")
     print(f"Videos with confidence < {confidence_threshold} will require your confirmation after all candidates are rated.")
@@ -622,25 +760,103 @@ def main() -> None:
     print("=" * 70)
     print()
 
-    if not rate_items:
-        print("No songs available to rate. Exiting.")
-        return
-
     # Stats tracking
     downloaded = 0
-    skipped = skipped
-
     low_confidence_queue: list[dict[str, object]] = []
 
+    # Map sampled results so we don't re-run searches for those
+    sample_map = {item['folder']: item for item in sampled_items}
+
+    # If any folder has a spreadsheet override, apply it to sampled results so
+    # the spreadsheet URL takes precedence for immediate downloads.
+    for entry in folder_entries:
+        folder_name = entry['folder']
+        sheet_match = entry.get('sheet_match')
+        if not sheet_match:
+            continue
+        url = extract_video_url(sheet_match)
+        if not url:
+            continue
+        if folder_name in sample_map:
+            sampled_entry = sample_map[folder_name]
+            sampled_entry['url'] = url
+            sampled_entry['confidence'] = 95
+            sampled_entry['url_source'] = 'spreadsheet'
+            sampled_entry['best_match'] = {
+                'url': url,
+                'title': 'Spreadsheet URL',
+                'confidence': 95,
+                'reason': 'spreadsheet override',
+            }
+
     try:
-        for item in rate_items:
+        for entry in folder_entries:
+            file = entry['folder']
+            artist = entry['artist']
+            title = entry['title']
+            query = entry['query']
+            sheet_match = entry['sheet_match']
+            currentSongFileFolder = entry['song_folder']
+
+            # Use sampled result when available
+            if file in sample_map:
+                item = sample_map[file]
+            else:
+                url = None
+                candidate_confidence: int | None = None
+                url_source = 'search'
+                candidates: list[dict[str, object]] = []
+                best_match: dict[str, object] = {}
+
+                if sheet_match is not None:
+                    url = extract_video_url(sheet_match)
+                    if url:
+                        candidate_confidence = 95
+                        url_source = 'spreadsheet'
+                        best_match = {
+                            'url': url,
+                            'title': 'Spreadsheet URL',
+                            'confidence': candidate_confidence,
+                            'reason': 'spreadsheet override',
+                        }
+
+                if url is None:
+                    print(f"Searching YouTube for: {query}")
+                    try:
+                        candidates = search_youtube_candidates(query, artist, title)
+                    except (KeyboardInterrupt, SystemExit):
+                        raise
+                    except BaseException as exc:
+                        increment_search_failures()
+                        print(f"  WARNING: YouTube search failed for '{query}': {exc}")
+                        candidates = []
+
+                    if candidates:
+                        best_match = candidates[0]
+                        candidate_confidence = best_match['confidence']
+                        url = best_match['url']
+
+                item = {
+                    'folder': file,
+                    'artist': artist,
+                    'title': title,
+                    'query': query,
+                    'sheet_match': sheet_match,
+                    'best_match': best_match,
+                    'candidates': candidates,
+                    'confidence': candidate_confidence,
+                    'url': url,
+                    'url_source': url_source,
+                    'song_folder': currentSongFileFolder,
+                }
+
+            # Immediately act on high-confidence matches
             if item['confidence'] is None or item['url'] is None:
                 print(f"Skipping {item['folder']} because no rated video was available.")
                 skipped += 1
                 continue
 
             print(f"Processing {item['folder']}")
-            currentSongFileFolder = item['song_folder']
             candidate_confidence = item['confidence']
             url = item['url']
             sheet_match = item['sheet_match']
@@ -792,6 +1008,8 @@ def main() -> None:
         print(f"Total songs processed: {total_songs}")
         print(f"Videos downloaded: {downloaded}")
         print(f"Songs skipped: {skipped}")
+        if search_failures:
+            print(f"Search failures encountered: {search_failures}")
         if total_songs > 0:
             print(f"Success rate: {(downloaded/total_songs*100):.1f}%")
         else:

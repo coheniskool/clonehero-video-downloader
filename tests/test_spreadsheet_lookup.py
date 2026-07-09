@@ -61,6 +61,24 @@ def test_prompt_confidence_threshold_defaults_when_non_interactive(monkeypatch):
     assert module.prompt_confidence_threshold(default=70) == 70
 
 
+def test_calculate_cochran_sample_size_scaling():
+    assert module.calculate_cochran_sample_size(1) == 1
+    assert module.calculate_cochran_sample_size(10) >= 1
+    assert module.calculate_cochran_sample_size(100) >= 1
+    assert module.calculate_cochran_sample_size(1000) <= 1000
+
+
+def test_summarize_confidence_statistics():
+    stats = module.summarize_confidence_statistics([10, 20, 20, 30])
+    assert stats['count'] == 4
+    assert stats['mean'] == 20
+    assert stats['median'] == 20
+    assert stats['mode'] == 20
+    assert stats['min'] == 10
+    assert stats['max'] == 30
+    assert stats['std_dev'] > 0
+
+
 def test_strip_title_noise_removes_pedal_variants():
     assert module.strip_title_noise('Song Title (2x Bass Pedal)') == 'Song Title'
     assert module.strip_title_noise('Song Title (2x Pedal)') == 'Song Title'
@@ -122,3 +140,4 @@ def test_search_youtube_candidates_handles_network_error(monkeypatch, capsys):
 
     assert candidates == []
     assert "WARNING: YouTube search failed" in captured.out
+    assert module.search_failures == 1
