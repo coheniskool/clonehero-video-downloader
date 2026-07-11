@@ -2,3 +2,6 @@ yt_dlp
 PyUsb
 usb
 google
+librosa
+numpy
+tqdm

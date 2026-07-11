@@ -11,3 +11,6 @@ __pycache__/
 # Local editor files
 *.swp
 *.swo
+
+# Runtime logs
+clonehero_offset.log*

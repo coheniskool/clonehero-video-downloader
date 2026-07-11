@@ -11,6 +11,7 @@ import os
 import random
 import re
 import statistics
+import subprocess
 import sys
 import urllib.request
 from difflib import SequenceMatcher
@@ -54,6 +55,26 @@ _DIFFICULTY_RESULT_RE = re.compile(
 VIDEO_FILE_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".flv", ".mp3", ".m4a"}
 VIDEO_METADATA_FILENAME = "video_meta.json"
 search_failures = 0
+
+#Browser to pull YouTube session cookies from (reduces bot-checks on batch runs).
+#Set to None to download without cookies.
+COOKIES_FROM_BROWSER = ("chrome",)
+
+#Clone Hero only recognizes a background video with exactly one of these
+#lowercase filenames sitting directly in the song folder.
+CANONICAL_VIDEO_NAMES = {"video.mp4", "video.avi", "video.webm", "video.ogv"}
+#Markers yt-dlp leaves on partial/fragment files from an interrupted or
+#not-yet-merged download (e.g. "video.f251.webm", "video.mp4.part", "video.temp.webm").
+#These can't be safely repaired -- they need a re-download, not a rename/remux.
+_YTDLP_FRAGMENT_RE = re.compile(r"\.f\d+\.|\.part$|\.ytdl$|\.temp\.", re.IGNORECASE)
+
+try:
+    from clonehero_video_offset import extract_audio, compute_offset, find_song_audio, find_video_file
+    OFFSET_SUPPORT = True
+except ImportError as exc:
+    OFFSET_SUPPORT = False
+    print(f"Audio offset detection disabled (missing dependency: {exc}).")
+    print("Run 'pip install librosa numpy tqdm' and ensure ffmpeg is on PATH to enable it.")
 
 
 def reset_search_failures() -> None:
@@ -178,6 +199,106 @@ def has_existing_video(song_folder: str) -> tuple[bool, Path | None]:
         if path.is_file() and path.suffix.lower() in VIDEO_FILE_EXTENSIONS:
             return True, path
     return False, None
+
+
+def scan_song_folder_video(song_dir: Path) -> dict[str, str]:
+    """Inspect a song folder's video file(s) and repair common yt-dlp naming issues.
+
+    Handles the double-extension files a literal (non-template) yt-dlp outtmpl
+    produces when it has to remux mismatched codecs -- "video.mp4.webm" (genuine
+    webm, just misnamed) and "video.mp4.mkv" (needs a real remux since Clone Hero
+    doesn't read .mkv) -- plus wrong-case names and unrepairable partial fragments.
+
+    Returns {'status': ..., 'detail': ...} where status is one of:
+    'ok', 'no_video', 'fixed_rename', 'fixed_remux', 'broken_fragment',
+    'remux_failed', 'unrecognized'.
+
+    Only the first fixable file in a folder is repaired per call; a folder
+    with multiple leftover variants gets cleaned up incrementally over
+    successive scans (real libraries have at most one leftover per song).
+    """
+    relevant = sorted(
+        p for p in song_dir.iterdir()
+        if p.is_file() and p.name.lower().startswith("video.")
+    )
+    if not relevant:
+        return {"status": "no_video", "detail": ""}
+
+    for p in relevant:
+        if p.name in CANONICAL_VIDEO_NAMES:
+            return {"status": "ok", "detail": p.name}
+
+    for p in relevant:
+        lower = p.name.lower()
+
+        if _YTDLP_FRAGMENT_RE.search(lower):
+            return {"status": "broken_fragment", "detail": p.name}
+
+        if lower in CANONICAL_VIDEO_NAMES:
+            target = song_dir / lower
+            p.rename(target)
+            return {"status": "fixed_rename", "detail": f"{p.name} -> {lower}"}
+
+        if lower.endswith(".webm"):
+            target = song_dir / "video.webm"
+            p.rename(target)
+            return {"status": "fixed_rename", "detail": f"{p.name} -> video.webm"}
+
+        if lower.endswith(".mkv"):
+            target = song_dir / "video.mp4"
+            backup = song_dir / (p.name + ".bak")
+            try:
+                #Video stream copied bit-for-bit; only audio is transcoded (Opus-in-MP4
+                #isn't reliably supported, but Clone Hero/most players handle AAC fine).
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(p), "-c:v", "copy", "-c:a", "aac", str(target)],
+                    check=True, capture_output=True,
+                )
+            except Exception as exc:
+                return {"status": "remux_failed", "detail": f"{p.name}: {exc}"}
+            p.rename(backup)
+            return {"status": "fixed_remux", "detail": f"{p.name} -> video.mp4 (original kept as {backup.name})"}
+
+    return {"status": "unrecognized", "detail": ", ".join(p.name for p in relevant)}
+
+
+def scan_and_fix_video_library(home_folder: str) -> None:
+    """Scan every song folder under home_folder and repair common Clone Hero video naming issues."""
+    print("=" * 70)
+    print("SCANNING EXISTING VIDEO LIBRARY")
+    print("=" * 70)
+
+    counts: dict[str, int] = {}
+    broken: list[str] = []
+
+    for folder in sorted(Path(home_folder).iterdir()):
+        if not folder.is_dir():
+            continue
+
+        result = scan_song_folder_video(folder)
+        counts[result["status"]] = counts.get(result["status"], 0) + 1
+
+        if result["status"] == "fixed_rename":
+            print(f"  Renamed: {folder.name}: {result['detail']}")
+        elif result["status"] == "fixed_remux":
+            print(f"  Remuxed: {folder.name}: {result['detail']}")
+        elif result["status"] == "broken_fragment":
+            broken.append(folder.name)
+        elif result["status"] in ("remux_failed", "unrecognized"):
+            print(f"  WARNING [{result['status']}]: {folder.name}: {result['detail']}")
+
+    print()
+    print(
+        f"Scan complete: {counts.get('ok', 0)} already correct, "
+        f"{counts.get('fixed_rename', 0)} renamed, {counts.get('fixed_remux', 0)} remuxed, "
+        f"{counts.get('no_video', 0)} without a video."
+    )
+    if broken:
+        print(f"{len(broken)} broken/incomplete download fragment(s) need a re-download (not auto-fixable):")
+        for name in broken:
+            print(f"  - {name}")
+    print("=" * 70)
+    print()
 
 
 def load_existing_video_confidence(song_folder: str) -> int | None:
@@ -454,6 +575,45 @@ def update_ini_with_offset(song_folder: str, offset: int) -> Path | None:
     return target
 
 
+def apply_audio_offset(song_folder: str) -> bool:
+    """Detect the audio/video sync offset for a freshly downloaded video and write it to the ini.
+
+    Returns True if a confident offset was computed and written.
+    """
+    if not OFFSET_SUPPORT:
+        return False
+
+    folder = Path(song_folder)
+    video_path = find_video_file(folder)
+    if video_path is None:
+        return False
+
+    audio_path = find_song_audio(folder)
+    if audio_path is None:
+        print(f"  Skipping offset detection: no usable full-mix audio found in {folder.name}")
+        return False
+
+    temp_wav = folder / "_offset_temp.wav"
+    try:
+        if not extract_audio(video_path, temp_wav):
+            print(f"  Skipping offset detection: ffmpeg could not extract audio from {video_path.name}")
+            return False
+
+        result = compute_offset(audio_path, temp_wav)
+        if result["status"] != "ok":
+            print(f"  Skipping offset detection: {result['status']} (confidence={result['confidence_ratio']:.2f})")
+            return False
+
+        offset_ms = result["offset_ms"]
+        updated_ini = update_ini_with_offset(song_folder, offset_ms)
+        if updated_ini is not None:
+            print(f"  Detected audio offset {offset_ms}ms (confidence={result['confidence_ratio']:.2f}); updated {updated_ini.name}")
+            return True
+        return False
+    finally:
+        temp_wav.unlink(missing_ok=True)
+
+
 def calculate_confidence(video_title: str, search_artist: str, search_title: str) -> tuple[int, str]:
     """
     Calculate confidence score (0-100) for how well a video matches the search.
@@ -547,11 +707,18 @@ def prompt_confidence_threshold(
 
 def download_video_if_needed(url: str, currentSongFileFolder: str, candidate_confidence: int | None) -> bool:
     """Download a video into a song folder and save metadata if successful."""
+    #Force codec-compatible pairs so yt-dlp merges into video.mp4 or video.webm --
+    #never a mismatched mp4-video/opus-audio pair, which yt-dlp can only hold in .mkv
+    #(Clone Hero doesn't recognize .mkv, and a literal "video.mp4" outtmpl lets
+    #yt-dlp tack the real extension on top of it, producing "video.mp4.mkv"/"video.mp4.webm").
     ydl_opts = {
-        'outtmpl': os.path.join(currentSongFileFolder, 'video.mp4'),
-        'nooverwrites': 0,
+        'outtmpl': os.path.join(currentSongFileFolder, 'video.%(ext)s'),
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=mp4]/best',
+        'overwrites': False,
         'noplaylist': 1,
     }
+    if COOKIES_FROM_BROWSER:
+        ydl_opts['cookiesfrombrowser'] = COOKIES_FROM_BROWSER
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -576,6 +743,11 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Maximum number of rated songs to sample before asking for a threshold; Cochran's 95%% CI formula determines the ideal sample size when this is 0.",
     )
+    parser.add_argument(
+        "--skip-library-scan",
+        action="store_true",
+        help="Skip the startup scan that repairs mis-named/mis-muxed video files already in your library.",
+    )
     return parser.parse_args()
 
 
@@ -599,6 +771,11 @@ def main() -> None:
     print(os.getcwd())
     print()
 
+    args = parse_args()
+
+    if not args.skip_library_scan:
+        scan_and_fix_video_library(homeFolder)
+
     # Ask user for confidence threshold
     print("=" * 70)
     print("CONFIDENCE VERIFICATION SETTINGS")
@@ -613,7 +790,6 @@ def main() -> None:
     print("  0-49:   Low confidence (weak match, likely wrong video)")
     print()
 
-    args = parse_args()
     default_threshold = args.threshold if args.threshold is not None else 70
     reset_search_failures()
 
@@ -898,14 +1074,19 @@ def main() -> None:
                 skipped += 1
                 continue
 
+            offset_from_sheet = False
             if sheet_match is not None:
                 offset = parse_offset(sheet_match.get('Offset'))
                 if offset is not None:
                     updated_ini = update_ini_with_offset(currentSongFileFolder, offset)
                     if updated_ini is not None:
-                        print(f"Updated {updated_ini.name} with offset {offset}")
+                        print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
+                        offset_from_sheet = True
                 else:
                     print("Spreadsheet match found but no numeric offset was available.")
+
+            if not offset_from_sheet:
+                apply_audio_offset(currentSongFileFolder)
 
         if low_confidence_queue:
             print("=" * 70)
@@ -984,14 +1165,19 @@ def main() -> None:
                     print()
                     continue
 
+                offset_from_sheet = False
                 if item['sheet_match'] is not None:
                     offset = parse_offset(item['sheet_match'].get('Offset'))
                     if offset is not None:
                         updated_ini = update_ini_with_offset(item['song_folder'], offset)
                         if updated_ini is not None:
-                            print(f"Updated {updated_ini.name} with offset {offset}")
+                            print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
+                            offset_from_sheet = True
                     else:
                         print("Spreadsheet match found but no numeric offset was available.")
+
+                if not offset_from_sheet:
+                    apply_audio_offset(item['song_folder'])
 
     except KeyboardInterrupt:
         print("\n\nScript interrupted by user (Ctrl+C)")
