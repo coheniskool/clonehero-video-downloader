@@ -161,7 +161,7 @@ The existing script has one test file, `tests/test_spreadsheet_lookup.py`, confi
 - [ ] `tests/test_song_ini_patch.py` passes and proves the patch function never corrupts unrelated `song.ini` content, and never touches a non-`video_start_time` key
 - [ ] `tests/test_compute_offset_sign.py` passes — sign convention empirically verified, not assumed
 - [ ] `--dry-run` computes and logs offsets without writing to `song.ini`, any video file, or `video_meta.json`
-- [ ] A library-status report can be generated showing, per song: video present/confidence, offset present/confidence/status, CH-score status (best-effort per the Task 9 spike outcome), and a `needs_review` flag
+- [ ] A library-status report can be generated showing, per song: video present/confidence, offset present/confidence/status, CH-score status (always `unknown` per the Task 9 spike's no-go decision), and a `needs_review` flag
 - [ ] The dead `batch_process()`/CLI entry point in `clonehero_video_offset.py` is removed
 - [ ] At least one song, manually playtested in Clone Hero after an automated offset write, plays in sync
 
@@ -178,7 +178,8 @@ The existing script has one test file, `tests/test_spreadsheet_lookup.py`, confi
 - ~~Sign convention~~ → resolved by verification method, not by guessing: `tests/test_compute_offset_sign.py` against a synthetic fixture with a known injected offset, required before any further write-path work (plan Checkpoint 3).
 - ~~Dead `batch_process()`/CLI entry point~~ → remove it (race risk against the same files as the main flow, never called from `main()`).
 
+**Resolved: Task 9 scores.bin spike — SKIP, use "unknown".** Within the ~2 hour timebox: a real community parser exists ([matthiasduyck/CloneHeroSaveGameEditor](https://github.com/matthiasduyck/CloneHeroSaveGameEditor), `ScoresData.cs`/`ScoreEntry.cs`), but even that project's own code has multiple unresolved `//todo unknown field` comments, and it splits entries on a literal byte-value-32 delimiter — fragile, since several real fields (raw percentages, star counts) can legitimately equal that byte value. More importantly, each entry only stores an opaque `SongIdentifier` hash, not a folder path; resolving it to an actual song folder requires *also* reverse-engineering `songcache.bin`, a second undocumented format the reference project hasn't solved either (confirmed via its own `TASKS_TODO.md`). On this machine, `scores.bin` itself is stale (358 bytes, last modified 2022-06-08) while `songcache.bin` was updated the day before this session — so even a working parser would surface almost no real data against the 5,131-song library. **Decision: no parser is built. The library-status report's CH-score column always shows `unknown`.**
+
 **Still open:**
-- Whether `scores.bin` (`AppData\LocalLow\srylain Inc_\Clone Hero\scores.bin`, 358 bytes, last modified 2022-06-08) can be parsed for per-song play status — timeboxed research spike (Task 9), with a documented "unknown" fallback if not feasible within ~2 hours. Does not block the report generator shipping.
 - Whether to eventually widen the correlation analysis window if songs with long video intros come back low-confidence — decide after real-library validation (Task 12) shows how common that is.
 - Whether to unify the two logging mechanisms (`print()` vs `RotatingFileHandler`) — flagged as a follow-up, not part of this feature.
