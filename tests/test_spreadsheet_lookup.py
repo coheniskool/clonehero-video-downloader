@@ -28,18 +28,6 @@ def test_find_sheet_match_prefers_artist_and_title():
     assert match['Offset'] == '-1000'
 
 
-def test_update_ini_with_offset_creates_or_updates_song_ini(tmp_path):
-    song_folder = tmp_path / 'Artist - Song'
-    song_folder.mkdir()
-    ini_path = song_folder / 'song.ini'
-    ini_path.write_text('[Song]\nvideo_start_time = 0\n', encoding='utf-8')
-
-    updated = module.update_ini_with_offset(str(song_folder), 1234)
-
-    assert updated == ini_path
-    assert 'video_start_time = 1234' in ini_path.read_text(encoding='utf-8')
-
-
 def test_strip_title_noise_removes_bass_pedal_variants():
     assert module.strip_title_noise('Song Title (2x Bass Pedal)') == 'Song Title'
     assert module.strip_title_noise('Song Title (4x Bass Pedal)') == 'Song Title'

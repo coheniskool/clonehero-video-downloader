@@ -13,6 +13,7 @@ import re
 import statistics
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -539,39 +540,76 @@ def parse_offset(value: str | None) -> int | None:
     return int(match.group(0)) if match else None
 
 
-def update_ini_with_offset(song_folder: str, offset: int) -> Path | None:
-    """Update the first matching .ini file in a song folder with the provided offset."""
+_VIDEO_START_TIME_LINE_RE = re.compile(r"^([ \t]*)video_start_time([ \t]*=[ \t]*).*?(\r\n|\r|\n|$)", re.IGNORECASE)
+_SONG_SECTION_LINE_RE = re.compile(r"^[ \t]*\[song\][ \t]*(\r\n|\r|\n|$)", re.IGNORECASE)
+
+
+def patch_song_ini(song_folder: str, offset_ms: int) -> Path | None:
+    """Write offset_ms to the song's video_start_time key, touching nothing else.
+
+    Unlike the update_ini_with_offset() this replaces, it never matches the
+    chart-internal offset/song_offset/video_offset keys -- only video_start_time,
+    case-insensitively. Every other line is preserved byte-for-byte, including
+    the file's existing CRLF-vs-LF convention. Writes atomically (temp file +
+    os.replace) so a failure mid-write can't corrupt the ini.
+    """
     folder = Path(song_folder)
     ini_files = sorted(folder.glob("*.ini"))
     if not ini_files:
         return None
-
     target = next((path for path in ini_files if path.name.lower() == "song.ini"), ini_files[0])
-    content = target.read_text(encoding="utf-8", errors="ignore")
 
-    if not content.strip():
-        content = "[Song]\nvideo_start_time = {offset}\n"
+    #newline="" disables universal-newline translation -- without it, read_text()
+    #silently converts CRLF to LF before we ever see it, corrupting the file's
+    #existing line-ending convention on every write.
+    with open(target, "r", encoding="utf-8", errors="ignore", newline="") as f:
+        original = f.read()
+    line_ending = "\r\n" if "\r\n" in original else "\n"
+
+    if not original.strip():
+        new_content = "[Song]{le}video_start_time = {offset}{le}".format(le=line_ending, offset=offset_ms)
     else:
+        lines = original.splitlines(keepends=True)
         updated = False
-        for key in ("video_start_time", "offset", "song_offset", "video_offset"):
-            pattern = re.compile(rf"(?im)^(\s*{re.escape(key)}\s*=)\s*.*$")
-            if pattern.search(content):
-                content = pattern.sub(rf"\g<1> {offset}", content, count=1)
+        for i, line in enumerate(lines):
+            match = _VIDEO_START_TIME_LINE_RE.match(line)
+            if match:
+                indent, equals, terminator = match.group(1), match.group(2), match.group(3)
+                lines[i] = "{indent}video_start_time{eq}{offset}{term}".format(
+                    indent=indent, eq=equals, offset=offset_ms, term=terminator
+                )
                 updated = True
                 break
 
         if not updated:
-            if re.search(r"(?im)^\s*\[Song\]\s*$", content):
-                content = re.sub(
-                    r"(?im)(^\s*\[Song\]\s*$)",
-                    rf"\1\nvideo_start_time = {offset}",
-                    content,
-                    count=1,
-                )
-            else:
-                content += f"\n[Song]\nvideo_start_time = {offset}\n"
+            insert_at = None
+            section_terminator = line_ending
+            for i, line in enumerate(lines):
+                match = _SONG_SECTION_LINE_RE.match(line)
+                if match:
+                    insert_at = i + 1
+                    section_terminator = match.group(1) or line_ending
+                    break
 
-    target.write_text(content, encoding="utf-8")
+            if insert_at is not None:
+                lines.insert(insert_at, "video_start_time = {offset}{term}".format(offset=offset_ms, term=section_terminator))
+            else:
+                if lines and not lines[-1].endswith(("\n", "\r")):
+                    lines[-1] += line_ending
+                lines.append("[Song]{le}".format(le=line_ending))
+                lines.append("video_start_time = {offset}{le}".format(offset=offset_ms, le=line_ending))
+
+        new_content = "".join(lines)
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), suffix=".ini")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(new_content)
+        os.replace(tmp_path, target)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
     return target
 
 
@@ -605,7 +643,7 @@ def apply_audio_offset(song_folder: str) -> bool:
             return False
 
         offset_ms = result["offset_ms"]
-        updated_ini = update_ini_with_offset(song_folder, offset_ms)
+        updated_ini = patch_song_ini(song_folder, offset_ms)
         if updated_ini is not None:
             print(f"  Detected audio offset {offset_ms}ms (confidence={result['confidence_ratio']:.2f}); updated {updated_ini.name}")
             return True
@@ -1078,7 +1116,7 @@ def main() -> None:
             if sheet_match is not None:
                 offset = parse_offset(sheet_match.get('Offset'))
                 if offset is not None:
-                    updated_ini = update_ini_with_offset(currentSongFileFolder, offset)
+                    updated_ini = patch_song_ini(currentSongFileFolder, offset)
                     if updated_ini is not None:
                         print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
                         offset_from_sheet = True
@@ -1169,7 +1207,7 @@ def main() -> None:
                 if item['sheet_match'] is not None:
                     offset = parse_offset(item['sheet_match'].get('Offset'))
                     if offset is not None:
-                        updated_ini = update_ini_with_offset(item['song_folder'], offset)
+                        updated_ini = patch_song_ini(item['song_folder'], offset)
                         if updated_ini is not None:
                             print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
                             offset_from_sheet = True
