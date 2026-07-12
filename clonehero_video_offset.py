@@ -35,13 +35,26 @@ VIDEO_NAMES = ('video.mp4', 'video.avi', 'video.webm', 'video.ogv')
 
 
 def find_song_audio(song_dir):
-    for name in FULL_MIX_NAMES:
-        candidate = song_dir / name
-        if candidate.exists():
-            return candidate
+    #filename is always "song*" regardless of numeric suffix -- some libraries use
+    #"song.ogg", others "song_1877.ogg" from a different chart source. Glob instead
+    #of matching FULL_MIX_NAMES exactly so ID-suffixed folders aren't silently skipped.
+    for ext in ('.ogg', '.opus', '.mp3', '.wav'):
+        matches = sorted(song_dir.glob('song*' + ext))
+        if matches:
+            return matches[0]
     #No dedicated full-mix file -- only safe to use a stem if it's the only track present.
     audio_files = [f for f in song_dir.glob('*') if f.suffix.lower() in {'.ogg', '.mp3', '.wav', '.opus'}]
     return audio_files[0] if len(audio_files) == 1 else None
+
+
+def find_song_ini(song_dir):
+    #also inconsistently named across the library ("song.ini" vs "song_2400.ini") -- there
+    #is always exactly one *.ini file per song folder regardless of chart source, so match
+    #on that, preferring the literal "song.ini" name when more than one .ini exists.
+    ini_files = sorted(song_dir.glob('*.ini'))
+    if not ini_files:
+        return None
+    return next((p for p in ini_files if p.name.lower() == 'song.ini'), ini_files[0])
 
 
 def find_video_file(song_dir):
