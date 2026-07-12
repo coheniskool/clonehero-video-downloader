@@ -70,7 +70,7 @@ CANONICAL_VIDEO_NAMES = {"video.mp4", "video.avi", "video.webm", "video.ogv"}
 _YTDLP_FRAGMENT_RE = re.compile(r"\.f\d+\.|\.part$|\.ytdl$|\.temp\.", re.IGNORECASE)
 
 try:
-    from clonehero_video_offset import extract_audio, compute_offset, find_song_audio, find_video_file
+    from clonehero_video_offset import extract_audio, compute_offset, find_song_audio, find_video_file, probe_frame_rate, reencode_to_cfr
     OFFSET_SUPPORT = True
 except ImportError as exc:
     OFFSET_SUPPORT = False
@@ -630,6 +630,13 @@ def apply_audio_offset(song_folder: str) -> bool:
     if audio_path is None:
         print(f"  Skipping offset detection: no usable full-mix audio found in {folder.name}")
         return False
+
+    if probe_frame_rate(video_path):
+        print(f"  Variable frame rate detected in {video_path.name}; re-encoding to constant frame rate...")
+        if not reencode_to_cfr(video_path):
+            print(f"  Skipping offset detection: CFR re-encode failed for {video_path.name}")
+            return False
+        print(f"  Re-encoded {video_path.name} to constant frame rate.")
 
     temp_wav = folder / "_offset_temp.wav"
     try:

@@ -4,7 +4,10 @@
 # breaks scipy's C extensions on Python 3.14, and numpy 2.5+ breaks numba (a librosa
 # dependency, which audio-offset-finder itself uses internally for MFCC computation).
 
+import json
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 import logging
 from logging.handlers import RotatingFileHandler
@@ -61,6 +64,52 @@ def find_video_file(song_dir):
         if candidate.exists():
             return candidate
     return None
+
+
+def probe_frame_rate(video_path):
+    #Variable Frame Rate (VFR) source video causes progressive, cumulative audio/video
+    #desync that a single static video_start_time offset cannot fix -- it only corrects
+    #the start point, not a drift that grows over the video's duration. r_frame_rate
+    #(the stream's nominal/container rate) and avg_frame_rate (the actual average over
+    #the whole stream) disagree exactly when the video is VFR; they match for CFR.
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'stream=r_frame_rate,avg_frame_rate',
+             '-of', 'json', str(video_path)],
+            check=True, capture_output=True, text=True,
+        )
+        data = json.loads(result.stdout)
+        streams = data.get('streams', [])
+        if not streams:
+            return False
+        stream = streams[0]
+        return stream.get('r_frame_rate', '0/0') != stream.get('avg_frame_rate', '0/0')
+    except Exception as e:
+        logging.error(f"ffprobe error {video_path}: {e}")
+        return False
+
+
+def reencode_to_cfr(video_path, fps=30):
+    #Overwrites video_path in place with a constant-frame-rate re-encode, no backup kept
+    #(confirmed decision -- keeps disk usage flat for a 5,000+ song library). Writes to a
+    #temp file in the same directory first so a crash mid-encode can't leave a partial/
+    #corrupt file at the real path.
+    video_path = Path(video_path)
+    fd, tmp_path = tempfile.mkstemp(dir=str(video_path.parent), suffix=video_path.suffix)
+    os.close(fd)
+    try:
+        subprocess.run(
+            ['ffmpeg', '-nostdin', '-i', str(video_path), '-r', str(fps), '-y', tmp_path],
+            check=True, capture_output=True, stdin=subprocess.DEVNULL,
+        )
+        os.replace(tmp_path, str(video_path))
+        return True
+    except Exception as e:
+        logging.error(f"CFR re-encode error {video_path}: {e}")
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        return False
 
 
 def extract_audio(video_path, out_wav):
