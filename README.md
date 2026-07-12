@@ -6,7 +6,9 @@ Disclaimer
 
 REQUIREMENTS
 - Must have youtube-dl downloaded (https://github.com/ytdl-org/youtube-dl/blob/master/README.md#readme)
-- Requires Python and the `yt_dlp` package installed in the project virtualenv
+- Requires Python and the packages in `pip-install.txt` installed in the project virtualenv (`pip install -r pip-install.txt`)
+- `ffmpeg`/`ffprobe` must be installed and on PATH -- used both for downloading (merging video/audio streams) and for offset detection (audio extraction, VFR detection/re-encode)
+- numpy must land in the `>=2,<=2.4` window if you're installing manually: numpy 1.26.x breaks scipy's C extensions on newer Python, and numpy 2.5+ breaks numba (a dependency of `audio-offset-finder`, used for video offset detection). `pip-install.txt` already pins this correctly.
 
 PROCEDURE
 1. Change the `homeFolder` value in `CH-VideoScript.py` to the directory containing your individual song folders.
@@ -19,12 +21,28 @@ PROCEDURE
    - queue low-confidence matches for a manual review after all folders have been rated
    - continue if YouTube search requests fail, logging a warning and reporting the number of search failures at the end
 3. During review, you can choose to download the best low-confidence candidate, skip the song, pick a different result, or enter a custom YouTube URL.
+4. After each video downloads, the script automatically detects the audio/video sync offset and writes it to that song's `song.ini` as `video_start_time` -- see **Video Offset Detection** below.
 
 TIP
 - Use `--threshold` to override the default auto-download cutoff.
 - The script is interactive by default and will prompt for the confidence threshold after sampling rated candidates.
 - Use `--no-interactive` to skip the prompt and use the default threshold.
 - Use `--sample-size` to control how many rated folders are shown before choosing the threshold.
+- Use `--dry-run` to preview computed video offsets (logged to the console) without writing to any `song.ini`, re-encoding any video, or updating `video_meta.json`. Search and download still happen normally -- only the offset-writing step is previewed.
+- Use `--skip-library-scan` to skip the startup scan that repairs mis-named/mis-muxed video files already in your library.
+
+VIDEO OFFSET DETECTION
+- After a video downloads (or if one already exists), the script extracts the video's audio track and cross-correlates it against the song's own backing-track audio (`audio-offset-finder`, MFCC-based) to compute the millisecond offset needed to sync the video to the chart. That value is written to `song.ini` as `video_start_time`.
+- If a spreadsheet row has its own `Offset` value, that's used instead of computing one -- spreadsheet offsets are treated as pre-vetted and take priority.
+- Variable Frame Rate (VFR) source video is detected automatically and re-encoded to Constant Frame Rate (CFR) in place before offset computation, since VFR causes progressive desync that a single offset value can't fix.
+- Every attempt's outcome (including low-confidence or failed ones) is recorded in that song's `video_meta.json`, and a song whose offset already reached a settled result is skipped on the next run -- so re-running the script over your whole library doesn't recompute everything from scratch.
+- The confidence score is a z-score-like "standard score" from `audio-offset-finder`, not a percentage. Real-world scores on actual downloaded videos in early testing came in noticeably lower (around 2-3) than a clean synthetic test signal (around 8-9) -- if a lot of songs are landing in `low_confidence`, that threshold may need recalibrating; check `MIN_STANDARD_SCORE` in `clonehero_video_offset.py`.
+- **Always spot-check a computed offset by loading the song in Clone Hero.** A written `video_start_time` is not guaranteed correct until confirmed in-game -- external validation isn't sufficient (Clone Hero's own decoder can behave differently than a general media player).
+
+LIBRARY STATUS REPORT
+- Run `generate_library_report(homeFolder)` (from a Python shell, or wire it to a future CLI flag) to scan every song folder and write `library_status_report.csv` into your library root.
+- Each row shows: folder/artist/title, whether a video exists and its match confidence, whether an offset was computed and its confidence/status, a Clone Hero played-score status (currently always `unknown` -- see `SPEC.md`'s Open Questions for why), and a `needs_review` flag for anything missing or unconfirmed.
+- This is read-only -- it never modifies `song.ini`, `video_meta.json`, or any video file, so it's safe to run at any time to check overall library coverage.
 
 **Confidence workflow (summary)**
 

@@ -155,15 +155,15 @@ The existing script has one test file, `tests/test_spreadsheet_lookup.py`, confi
 
 ## Success Criteria
 
-- [ ] Running `python CH-VideoScript.py` end-to-end (search → download → offset) leaves every newly-downloaded song's `song.ini` with a correct `video_start_time` value
-- [ ] `video_meta.json` gains `offset_ms`, `offset_confidence`, `offset_status`, `updated_at` fields; the offset phase is resumable (settled songs skipped on rerun)
-- [ ] VFR source video is detected and transparently re-encoded to CFR before offset computation, logged either way
-- [ ] `tests/test_song_ini_patch.py` passes and proves the patch function never corrupts unrelated `song.ini` content, and never touches a non-`video_start_time` key
-- [ ] `tests/test_compute_offset_sign.py` passes — sign convention empirically verified, not assumed
-- [ ] `--dry-run` computes and logs offsets without writing to `song.ini`, any video file, or `video_meta.json`
-- [ ] A library-status report can be generated showing, per song: video present/confidence, offset present/confidence/status, CH-score status (always `unknown` per the Task 9 spike's no-go decision), and a `needs_review` flag
-- [ ] The dead `batch_process()`/CLI entry point in `clonehero_video_offset.py` is removed
-- [ ] At least one song, manually playtested in Clone Hero after an automated offset write, plays in sync
+- [x] Running `python CH-VideoScript.py` end-to-end (search → download → offset) leaves every newly-downloaded song's `song.ini` with a `video_start_time` value — mechanism implemented and verified (writes a computed value, atomically, touching only that key); whether the written value is *correct* for real downloaded videos is pending the in-game playtest below (Task 12, deferred to the user)
+- [x] `video_meta.json` gains `offset_ms`, `offset_confidence`, `offset_status`, `updated_at` fields; the offset phase is resumable (settled songs skipped on rerun) — verified end-to-end against a copied real song folder (first run computes+writes, second run skips)
+- [x] VFR source video is detected and transparently re-encoded to CFR before offset computation, logged either way — `probe_frame_rate()`/`reencode_to_cfr()` unit-tested; ffprobe verified against real library videos (none VFR in the sample checked, so `reencode_to_cfr()`'s real-ffmpeg path is proven via mocked subprocess tests, not a real VFR clip)
+- [x] `tests/test_song_ini_patch.py` passes and proves the patch function never corrupts unrelated `song.ini` content, and never touches a non-`video_start_time` key
+- [x] `tests/test_compute_offset_sign.py` passes — sign convention empirically verified, not assumed (plan Checkpoint 3, hard gate)
+- [x] `--dry-run` computes and logs offsets without writing to `song.ini`, any video file, or `video_meta.json` — verified with mocked tests AND a real (non-mocked) run against an actual downloaded video: zero bytes changed, no `video_meta.json` created
+- [x] A library-status report can be generated showing, per song: video present/confidence, offset present/confidence/status, CH-score status (always `unknown` per the Task 9 spike's no-go decision), and a `needs_review` flag — verified against real library folder copies
+- [x] The dead `batch_process()`/CLI entry point in `clonehero_video_offset.py` is removed
+- [ ] **Deferred to the user**: at least one song, manually playtested in Clone Hero after an automated offset write, plays in sync. A real (non-mocked) dry-run against an actual downloaded video ("3 Doors Down - Kryptonite") computed `video_start_time = 816ms` at confidence `2.40` — notably lower than the ~8.8 seen on a clean synthetic test signal, which is the real-world data point this playtest needs to validate (both the offset's correctness and whether `MIN_STANDARD_SCORE = 0.5` needs recalibrating). See `tasks/todo.md` Task 12.
 
 ## Open Questions
 
