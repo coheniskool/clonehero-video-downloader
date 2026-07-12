@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -327,6 +328,70 @@ def save_video_metadata(song_folder: str, confidence: int, url: str) -> None:
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
 
+#Offset statuses that represent a completed, meaningful attempt -- re-running against
+#the same video/audio without any change would just recompute the same result, so
+#these are skipped on rerun. "error" is deliberately excluded: it represents an
+#unexpected failure (ffmpeg crash, transient I/O error, etc.) that may not recur,
+#so it's always retried on the next run.
+SETTLED_OFFSET_STATUSES = ("written", "low_confidence", "no_reference_audio", "vfr_exceeds_window")
+
+
+def load_offset_metadata(song_folder: str) -> dict | None:
+    """Load the stored offset-detection result for a song folder, if available."""
+    metadata_path = Path(song_folder) / VIDEO_METADATA_FILENAME
+    if not metadata_path.exists():
+        return None
+    try:
+        with metadata_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data.get("offset")
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def is_offset_settled(song_folder: str) -> bool:
+    """Return True if a prior offset attempt already reached a settled status."""
+    offset_meta = load_offset_metadata(song_folder)
+    if not offset_meta:
+        return False
+    return offset_meta.get("status") in SETTLED_OFFSET_STATUSES
+
+
+def save_offset_metadata(song_folder: str, offset_ms: int, confidence: float, status: str) -> None:
+    """Persist an offset-detection result into video_meta.json, merging with existing fields.
+
+    Merges rather than overwrites so this never clobbers the video-match confidence/url
+    save_video_metadata() already wrote for the same folder.
+    """
+    metadata_path = Path(song_folder) / VIDEO_METADATA_FILENAME
+    metadata: dict = {}
+    if metadata_path.exists():
+        try:
+            with metadata_path.open("r", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+
+    metadata["offset"] = {
+        "offset_ms": offset_ms,
+        "confidence": confidence,
+        "status": status,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+    #atomic write -- this file is also read by the video-match confidence logic, so a
+    #half-written file from a crash mid-write would corrupt both concerns, not just this one.
+    fd, tmp_path = tempfile.mkstemp(dir=song_folder, suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+        os.replace(tmp_path, metadata_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
 def select_random_sample(items: list[dict[str, object]], sample_size: int = 3) -> list[dict[str, object]]:
     """Return a random sample of items for threshold review."""
     if sample_size <= 0:
@@ -616,9 +681,14 @@ def patch_song_ini(song_folder: str, offset_ms: int) -> Path | None:
 def apply_audio_offset(song_folder: str) -> bool:
     """Detect the audio/video sync offset for a freshly downloaded video and write it to the ini.
 
-    Returns True if a confident offset was computed and written.
+    Returns True if a confident offset was computed and written. Every attempt's
+    outcome is persisted to video_meta.json (even failures/low-confidence results),
+    and a prior settled result is skipped on rerun -- see SETTLED_OFFSET_STATUSES.
     """
     if not OFFSET_SUPPORT:
+        return False
+
+    if is_offset_settled(song_folder):
         return False
 
     folder = Path(song_folder)
@@ -629,12 +699,14 @@ def apply_audio_offset(song_folder: str) -> bool:
     audio_path = find_song_audio(folder)
     if audio_path is None:
         print(f"  Skipping offset detection: no usable full-mix audio found in {folder.name}")
+        save_offset_metadata(song_folder, offset_ms=0, confidence=0.0, status="no_reference_audio")
         return False
 
     if probe_frame_rate(video_path):
         print(f"  Variable frame rate detected in {video_path.name}; re-encoding to constant frame rate...")
         if not reencode_to_cfr(video_path):
             print(f"  Skipping offset detection: CFR re-encode failed for {video_path.name}")
+            save_offset_metadata(song_folder, offset_ms=0, confidence=0.0, status="error")
             return False
         print(f"  Re-encoded {video_path.name} to constant frame rate.")
 
@@ -642,18 +714,22 @@ def apply_audio_offset(song_folder: str) -> bool:
     try:
         if not extract_audio(video_path, temp_wav):
             print(f"  Skipping offset detection: ffmpeg could not extract audio from {video_path.name}")
+            save_offset_metadata(song_folder, offset_ms=0, confidence=0.0, status="error")
             return False
 
         result = compute_offset(audio_path, temp_wav)
         if result["status"] != "ok":
             print(f"  Skipping offset detection: {result['status']} (confidence={result['confidence_ratio']:.2f})")
+            save_offset_metadata(song_folder, offset_ms=result["offset_ms"], confidence=result["confidence_ratio"], status=result["status"])
             return False
 
         offset_ms = result["offset_ms"]
         updated_ini = patch_song_ini(song_folder, offset_ms)
         if updated_ini is not None:
             print(f"  Detected audio offset {offset_ms}ms (confidence={result['confidence_ratio']:.2f}); updated {updated_ini.name}")
+            save_offset_metadata(song_folder, offset_ms=offset_ms, confidence=result["confidence_ratio"], status="written")
             return True
+        save_offset_metadata(song_folder, offset_ms=offset_ms, confidence=result["confidence_ratio"], status="error")
         return False
     finally:
         temp_wav.unlink(missing_ok=True)
