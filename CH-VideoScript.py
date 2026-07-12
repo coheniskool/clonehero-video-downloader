@@ -392,6 +392,79 @@ def save_offset_metadata(song_folder: str, offset_ms: int, confidence: float, st
         raise
 
 
+LIBRARY_REPORT_FILENAME = "library_status_report.csv"
+LIBRARY_REPORT_FIELDNAMES = [
+    "folder", "artist", "title",
+    "has_video", "video_confidence",
+    "has_offset", "offset_ms", "offset_confidence", "offset_status",
+    "ch_score_status",
+    "needs_review",
+]
+#Below this, a video match is treated as unconfirmed for reporting purposes. Not
+#persisted anywhere -- the user's actual download-time threshold isn't stored in
+#video_meta.json -- so this is a fixed, documented default independent of whatever
+#threshold was used when the video was originally downloaded.
+LOW_VIDEO_CONFIDENCE_THRESHOLD = 70
+
+
+def _library_report_row(song_folder: Path) -> dict[str, object]:
+    artist, title = parse_folder_name(song_folder.name)
+    has_video, _ = has_existing_video(str(song_folder))
+    video_confidence = load_existing_video_confidence(str(song_folder))
+    offset_meta = load_offset_metadata(str(song_folder)) or {}
+    offset_status = offset_meta.get("status", "")
+
+    needs_review = (
+        not has_video
+        or video_confidence is None
+        or video_confidence < LOW_VIDEO_CONFIDENCE_THRESHOLD
+        or offset_status != "written"
+    )
+
+    return {
+        "folder": song_folder.name,
+        "artist": artist,
+        "title": title,
+        "has_video": has_video,
+        "video_confidence": video_confidence if video_confidence is not None else "",
+        "has_offset": bool(offset_meta),
+        "offset_ms": offset_meta.get("offset_ms", ""),
+        "offset_confidence": offset_meta.get("confidence", ""),
+        "offset_status": offset_status,
+        #always "unknown" -- see the Task 9 spike outcome in SPEC.md: parsing scores.bin
+        #would require also reverse-engineering the undocumented songcache.bin to resolve
+        #its opaque song identifiers to folders, for very little real data on top of that
+        "ch_score_status": "unknown",
+        "needs_review": needs_review,
+    }
+
+
+def generate_library_report(home_folder: str, output_path: str | None = None) -> Path:
+    """Scan every song folder under home_folder and write a CSV status report.
+
+    Read-only -- this never writes to song.ini, video_meta.json, or any video file,
+    it only reports on state earlier phases (search/download/offset) already wrote.
+    """
+    home = Path(home_folder)
+    report_path = Path(output_path) if output_path else home / LIBRARY_REPORT_FILENAME
+
+    rows = [_library_report_row(entry) for entry in sorted(home.iterdir()) if entry.is_dir()]
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(home), suffix=".csv")
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=LIBRARY_REPORT_FIELDNAMES)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+        os.replace(tmp_path, report_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+    return report_path
+
+
 def select_random_sample(items: list[dict[str, object]], sample_size: int = 3) -> list[dict[str, object]]:
     """Return a random sample of items for threshold review."""
     if sample_size <= 0:
