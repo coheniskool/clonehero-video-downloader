@@ -75,7 +75,7 @@ try:
 except ImportError as exc:
     OFFSET_SUPPORT = False
     print(f"Audio offset detection disabled (missing dependency: {exc}).")
-    print("Run 'pip install librosa numpy tqdm' and ensure ffmpeg is on PATH to enable it.")
+    print("Run 'pip install audio-offset-finder numpy' and ensure ffmpeg is on PATH to enable it.")
 
 
 def reset_search_failures() -> None:

@@ -1,29 +1,27 @@
 # clonehero_video_offset.py
-# pip install librosa numpy
+# pip install audio-offset-finder numpy
+# NOTE: numpy must land in the >=2,<=2.4 window on this environment -- numpy 1.26.x
+# breaks scipy's C extensions on Python 3.14, and numpy 2.5+ breaks numba (a librosa
+# dependency, which audio-offset-finder itself uses internally for MFCC computation).
 
 import subprocess
 from pathlib import Path
-import librosa
-import numpy as np
 import logging
 from logging.handlers import RotatingFileHandler
+from audio_offset_finder.audio_offset_finder import find_offset_between_files
 
 handler = RotatingFileHandler('clonehero_offset.log', maxBytes=1_000_000, backupCount=5)
 logging.basicConfig(level=logging.INFO, handlers=[handler], format='%(asctime)s - %(levelname)s - %(message)s')
 
-#Analysis window in seconds. Offsets larger than this can never be measured,
-#since only the first WINDOW_S seconds of each track are loaded.
-WINDOW_S = 45
-#Detected offsets beyond this are untrustworthy noise from window-edge effects
-#rather than genuine large intros -- flagged and skipped instead of clamped.
-#Scaled off WINDOW_S: an offset near the full window means the true offset
-#may be even larger and we simply can't tell, but one comfortably inside it
-#(e.g. a 27s intro within a 45s window) is a legitimate measurement.
-MAX_TRUSTED_OFFSET_MS = int(WINDOW_S * 1000 * 0.75)
-#Ratio of (90th-10th percentile spread) to (min cost) in the DTW path's final
-#row. Low ratio means the cost landscape is flat/noisy -- no real alignment
-#signal -- and the backtrack just defaults to a trivial near-zero-shift path.
-MIN_CONFIDENCE_RATIO = 0.3
+#audio-offset-finder's "standard score" is a z-score of the correlation peak (standard
+#deviations above the mean of the correlation curve) -- a very different scale from the
+#old DTW confidence_ratio this replaces. 0.5 was the default confirmed during /spec
+#review, before this backend was empirically tested; a smoke test against a clean
+#synthetic signal (Task 5 commit) scored ~8.8, so 0.5 may be far too permissive to
+#ever flag a genuinely weak match. Flagged for recalibration once Task 12's
+#real-library validation provides real-world scores to tune against -- not changed
+#here without asking, per the spec's "ask first" boundary on this threshold.
+MIN_STANDARD_SCORE = 0.5
 
 #Clone Hero's own convention for the full mixed track. Multitrack charts also
 #ship isolated stems (drums.ogg, crowd.ogg, vocals.ogg, ...) that must NOT be
@@ -74,24 +72,20 @@ def extract_audio(video_path, out_wav):
         logging.error(f"FFmpeg error {video_path}: {e}")
         return False
 
-def compute_offset(song_path, vid_audio, sr=16000, hop_length=1024):
+def compute_offset(song_path, vid_audio):
     try:
-        y_song, _ = librosa.load(song_path, sr=sr, duration=WINDOW_S)
-        y_vid, _ = librosa.load(vid_audio, sr=sr, duration=WINDOW_S)
-        oenv_song = librosa.onset.onset_strength(y=y_song, sr=sr, hop_length=hop_length)
-        oenv_vid = librosa.onset.onset_strength(y=y_vid, sr=sr, hop_length=hop_length)
-        D, wp = librosa.sequence.dtw(oenv_song, oenv_vid, subseq=True, metric='euclidean')
-        offset_frames = wp[-1, 0] - wp[-1, 1]
-        offset_ms = int(offset_frames * hop_length / sr * 1000)
+        result = find_offset_between_files(str(song_path), str(vid_audio))
+        #find_offset_between_files' own docstring claims a positive time_offset means
+        #"file2 starts after file1" -- empirically verified during implementation that
+        #its actual behavior is the opposite (a controlled test: delaying file2's content
+        #by a known +0.25s produced time_offset=-0.248, not +0.248). Negating it here
+        #converts to Clone Hero's video_start_time convention: positive = skip ahead
+        #into the video (it has an intro before the song starts), negative = delay the
+        #video's appearance (the video is missing its intro).
+        offset_ms = round(-result["time_offset"] * 1000)
+        confidence_ratio = result["standard_score"]
 
-        last_row = D[-1, :]
-        min_cost = float(last_row.min())
-        spread = float(np.percentile(last_row, 90) - np.percentile(last_row, 10))
-        confidence_ratio = spread / min_cost if min_cost > 0 else 0.0
-
-        if abs(offset_ms) > MAX_TRUSTED_OFFSET_MS:
-            return {"offset_ms": offset_ms, "confidence_ratio": confidence_ratio, "status": "exceeds_window"}
-        if confidence_ratio < MIN_CONFIDENCE_RATIO:
+        if confidence_ratio < MIN_STANDARD_SCORE:
             return {"offset_ms": offset_ms, "confidence_ratio": confidence_ratio, "status": "low_confidence"}
         return {"offset_ms": offset_ms, "confidence_ratio": confidence_ratio, "status": "ok"}
     except Exception as e:

@@ -2,6 +2,5 @@ yt_dlp
 PyUsb
 usb
 google
-librosa
-numpy
-tqdm
+audio-offset-finder
+numpy>=2,<=2.4
