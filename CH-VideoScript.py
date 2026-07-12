@@ -751,12 +751,16 @@ def patch_song_ini(song_folder: str, offset_ms: int) -> Path | None:
     return target
 
 
-def apply_audio_offset(song_folder: str) -> bool:
+def apply_audio_offset(song_folder: str, dry_run: bool = False) -> bool:
     """Detect the audio/video sync offset for a freshly downloaded video and write it to the ini.
 
     Returns True if a confident offset was computed and written. Every attempt's
     outcome is persisted to video_meta.json (even failures/low-confidence results),
     and a prior settled result is skipped on rerun -- see SETTLED_OFFSET_STATUSES.
+
+    When dry_run is True, VFR detection/extraction/compute_offset() still run (so
+    the user sees what would happen) but nothing is written: no CFR re-encode
+    overwrite, no song.ini patch, no video_meta.json persistence.
     """
     if not OFFSET_SUPPORT:
         return False
@@ -772,31 +776,41 @@ def apply_audio_offset(song_folder: str) -> bool:
     audio_path = find_song_audio(folder)
     if audio_path is None:
         print(f"  Skipping offset detection: no usable full-mix audio found in {folder.name}")
-        save_offset_metadata(song_folder, offset_ms=0, confidence=0.0, status="no_reference_audio")
+        if not dry_run:
+            save_offset_metadata(song_folder, offset_ms=0, confidence=0.0, status="no_reference_audio")
         return False
 
     if probe_frame_rate(video_path):
-        print(f"  Variable frame rate detected in {video_path.name}; re-encoding to constant frame rate...")
-        if not reencode_to_cfr(video_path):
-            print(f"  Skipping offset detection: CFR re-encode failed for {video_path.name}")
-            save_offset_metadata(song_folder, offset_ms=0, confidence=0.0, status="error")
-            return False
-        print(f"  Re-encoded {video_path.name} to constant frame rate.")
+        if dry_run:
+            print(f"  [dry-run] Variable frame rate detected in {video_path.name}; would re-encode to constant frame rate (skipped).")
+        else:
+            print(f"  Variable frame rate detected in {video_path.name}; re-encoding to constant frame rate...")
+            if not reencode_to_cfr(video_path):
+                print(f"  Skipping offset detection: CFR re-encode failed for {video_path.name}")
+                save_offset_metadata(song_folder, offset_ms=0, confidence=0.0, status="error")
+                return False
+            print(f"  Re-encoded {video_path.name} to constant frame rate.")
 
     temp_wav = folder / "_offset_temp.wav"
     try:
         if not extract_audio(video_path, temp_wav):
             print(f"  Skipping offset detection: ffmpeg could not extract audio from {video_path.name}")
-            save_offset_metadata(song_folder, offset_ms=0, confidence=0.0, status="error")
+            if not dry_run:
+                save_offset_metadata(song_folder, offset_ms=0, confidence=0.0, status="error")
             return False
 
         result = compute_offset(audio_path, temp_wav)
         if result["status"] != "ok":
             print(f"  Skipping offset detection: {result['status']} (confidence={result['confidence_ratio']:.2f})")
-            save_offset_metadata(song_folder, offset_ms=result["offset_ms"], confidence=result["confidence_ratio"], status=result["status"])
+            if not dry_run:
+                save_offset_metadata(song_folder, offset_ms=result["offset_ms"], confidence=result["confidence_ratio"], status=result["status"])
             return False
 
         offset_ms = result["offset_ms"]
+        if dry_run:
+            print(f"  [dry-run] Would set video_start_time = {offset_ms} (confidence={result['confidence_ratio']:.2f}) -- not written.")
+            return False
+
         updated_ini = patch_song_ini(song_folder, offset_ms)
         if updated_ini is not None:
             print(f"  Detected audio offset {offset_ms}ms (confidence={result['confidence_ratio']:.2f}); updated {updated_ini.name}")
@@ -941,6 +955,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-library-scan",
         action="store_true",
         help="Skip the startup scan that repairs mis-named/mis-muxed video files already in your library.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compute and log offsets without writing to song.ini, re-encoding any video, or updating video_meta.json.",
     )
     return parser.parse_args()
 
@@ -1272,15 +1291,19 @@ def main() -> None:
             if sheet_match is not None:
                 offset = parse_offset(sheet_match.get('Offset'))
                 if offset is not None:
-                    updated_ini = patch_song_ini(currentSongFileFolder, offset)
-                    if updated_ini is not None:
-                        print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
+                    if args.dry_run:
+                        print(f"[dry-run] Would update song.ini with offset {offset} (spreadsheet) -- not written.")
                         offset_from_sheet = True
+                    else:
+                        updated_ini = patch_song_ini(currentSongFileFolder, offset)
+                        if updated_ini is not None:
+                            print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
+                            offset_from_sheet = True
                 else:
                     print("Spreadsheet match found but no numeric offset was available.")
 
             if not offset_from_sheet:
-                apply_audio_offset(currentSongFileFolder)
+                apply_audio_offset(currentSongFileFolder, dry_run=args.dry_run)
 
         if low_confidence_queue:
             print("=" * 70)
@@ -1363,15 +1386,19 @@ def main() -> None:
                 if item['sheet_match'] is not None:
                     offset = parse_offset(item['sheet_match'].get('Offset'))
                     if offset is not None:
-                        updated_ini = patch_song_ini(item['song_folder'], offset)
-                        if updated_ini is not None:
-                            print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
+                        if args.dry_run:
+                            print(f"[dry-run] Would update song.ini with offset {offset} (spreadsheet) -- not written.")
                             offset_from_sheet = True
+                        else:
+                            updated_ini = patch_song_ini(item['song_folder'], offset)
+                            if updated_ini is not None:
+                                print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
+                                offset_from_sheet = True
                     else:
                         print("Spreadsheet match found but no numeric offset was available.")
 
                 if not offset_from_sheet:
-                    apply_audio_offset(item['song_folder'])
+                    apply_audio_offset(item['song_folder'], dry_run=args.dry_run)
 
     except KeyboardInterrupt:
         print("\n\nScript interrupted by user (Ctrl+C)")
