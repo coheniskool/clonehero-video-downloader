@@ -1,15 +1,12 @@
 # clonehero_video_offset.py
-# pip install librosa numpy tqdm
+# pip install librosa numpy
 
 import subprocess
 from pathlib import Path
 import librosa
 import numpy as np
-from tqdm import tqdm
 import logging
 from logging.handlers import RotatingFileHandler
-import argparse
-from concurrent.futures import ThreadPoolExecutor
 
 handler = RotatingFileHandler('clonehero_offset.log', maxBytes=1_000_000, backupCount=5)
 logging.basicConfig(level=logging.INFO, handlers=[handler], format='%(asctime)s - %(levelname)s - %(message)s')
@@ -88,52 +85,3 @@ def compute_offset(song_path, vid_audio, sr=16000, hop_length=1024):
         logging.error(f"Offset error {song_path}: {e}")
         return {"offset_ms": 0, "confidence_ratio": 0.0, "status": "error"}
 
-def update_ini(song_dir, offset):
-    #offset=None clears any stale value (e.g. left over from a low-confidence prior run)
-    #instead of writing a known-bad number.
-    try:
-        ini = Path(song_dir) / 'song.ini'
-        if not ini.exists(): return
-        content = ini.read_text()
-        lines = [line for line in content.splitlines() if not line.strip().startswith('video_start_time')]
-        if offset is not None:
-            lines.append(f'video_start_time = {offset}')
-        ini.write_text('\n'.join(lines) + '\n')
-    except Exception as e:
-        logging.error(f"INI error {song_dir}: {e}")
-
-def process_song(song_dir):
-    song = find_song_audio(song_dir)
-    vid = find_video_file(song_dir)
-    if not song:
-        logging.warning(f"No usable full-mix audio (stems-only or missing): {song_dir.name}")
-        return
-    if not vid:
-        logging.warning(f"Missing video: {song_dir.name}")
-        return
-    temp = song_dir / 'temp_vid.wav'
-    if not extract_audio(vid, temp):
-        return
-    result = compute_offset(song, temp)
-    temp.unlink(missing_ok=True)
-    offset, conf, status = result["offset_ms"], result["confidence_ratio"], result["status"]
-    if status == "ok":
-        update_ini(song_dir, offset)
-        logging.info(f"Processed {song_dir.name}: {offset}ms (confidence={conf:.2f})")
-    else:
-        update_ini(song_dir, None)
-        logging.warning(f"Skipped {song_dir.name}: status={status}, raw_offset={offset}ms, confidence={conf:.2f}")
-
-def batch_process(root_dir='.'):
-    song_dirs = [d for d in Path(root_dir).iterdir() if d.is_dir()]
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        list(tqdm(executor.map(process_song, song_dirs), total=len(song_dirs), desc="Processing songs"))
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--dir', default='.', help='Root songs directory')
-    args = parser.parse_args()
-    try:
-        batch_process(args.dir)
-    except Exception as e:
-        logging.error(f"Batch error: {e}")
