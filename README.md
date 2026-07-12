@@ -10,6 +10,11 @@ REQUIREMENTS
 - `ffmpeg`/`ffprobe` must be installed and on PATH -- used both for downloading (merging video/audio streams) and for offset detection (audio extraction, VFR detection/re-encode)
 - numpy must land in the `>=2,<=2.4` window if you're installing manually: numpy 1.26.x breaks scipy's C extensions on newer Python, and numpy 2.5+ breaks numba (a dependency of `audio-offset-finder`, used for video offset detection). `pip-install.txt` already pins this correctly.
 
+COOKIES
+- By default the script pulls your YouTube session cookies from Chrome (`COOKIES_FROM_BROWSER = ("chrome",)` in `CH-VideoScript.py`) to reduce bot-detection false positives during downloads. This requires Chrome to be **fully closed** (not just the window -- check Task Manager for lingering `chrome.exe` processes) while the script runs, since Chrome locks its cookie database while open; otherwise every download fails with `Could not copy Chrome cookie database` (see https://github.com/yt-dlp/yt-dlp/issues/7271).
+- If you don't want to keep Chrome closed during a run, export your cookies to a static file instead (e.g. with the "Get cookies.txt LOCALLY" browser extension) and set `COOKIES_FILE = "cookies.txt"` (or a full path) at the top of `CH-VideoScript.py`. `COOKIES_FILE` takes priority over `COOKIES_FROM_BROWSER` when set, and reading a static file has no locking issue.
+- Note: only the download step uses cookies. The initial YouTube search step does not pass cookies at all, so a bot-detection block during *search* isn't fixed by either of the above.
+
 PROCEDURE
 1. Change the `homeFolder` value in `CH-VideoScript.py` to the directory containing your individual song folders.
    For example: `homeFolder = "clonehero-win64\Songs\Guitar Hero 3"`

@@ -59,8 +59,17 @@ VIDEO_METADATA_FILENAME = "video_meta.json"
 search_failures = 0
 
 #Browser to pull YouTube session cookies from (reduces bot-checks on batch runs).
-#Set to None to download without cookies.
+#Set to None to download without cookies. Only used if COOKIES_FILE is not set below.
 COOKIES_FROM_BROWSER = ("chrome",)
+
+#Alternative to COOKIES_FROM_BROWSER: path to a Netscape-format cookies.txt file,
+#e.g. exported with the "Get cookies.txt LOCALLY" browser extension. Reading a
+#static file avoids yt-dlp's "Could not copy Chrome cookie database" error, which
+#happens because cookiesfrombrowser can't read Chrome's cookie DB while Chrome is
+#running (Chrome holds an exclusive lock on it) -- see
+#https://github.com/yt-dlp/yt-dlp/issues/7271. If set, this takes priority over
+#COOKIES_FROM_BROWSER so you don't have to keep your browser closed during a run.
+COOKIES_FILE = None
 
 #Clone Hero only recognizes a background video with exactly one of these
 #lowercase filenames sitting directly in the song folder.
@@ -925,7 +934,9 @@ def download_video_if_needed(url: str, currentSongFileFolder: str, candidate_con
         'overwrites': False,
         'noplaylist': 1,
     }
-    if COOKIES_FROM_BROWSER:
+    if COOKIES_FILE:
+        ydl_opts['cookiefile'] = COOKIES_FILE
+    elif COOKIES_FROM_BROWSER:
         ydl_opts['cookiesfrombrowser'] = COOKIES_FROM_BROWSER
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
