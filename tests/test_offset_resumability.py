@@ -82,3 +82,34 @@ def test_apply_audio_offset_skips_recomputation_when_already_settled(tmp_path):
 
 	mock_compute.assert_not_called()
 	assert result is False
+
+
+def test_save_offset_metadata_defaults_source_to_computed(tmp_path):
+	CH.save_offset_metadata(str(tmp_path), offset_ms=1234, confidence=8.5, status='written')
+
+	meta = _read_meta(tmp_path)
+	assert meta['offset']['source'] == 'computed'
+
+
+def test_save_offset_metadata_records_spreadsheet_source(tmp_path):
+	CH.save_offset_metadata(str(tmp_path), offset_ms=-2700, confidence=None, status='written', source='spreadsheet')
+
+	meta = _read_meta(tmp_path)
+	assert meta['offset']['source'] == 'spreadsheet'
+	assert meta['offset']['offset_ms'] == -2700
+
+
+def test_spreadsheet_sourced_offset_is_settled_and_skips_audio_detection(tmp_path):
+	# a spreadsheet-sourced offset is "written" just like a computed one, so it must
+	# be recognized as settled -- this is what makes a spreadsheet entry "run once"
+	(tmp_path / 'video.mp4').write_bytes(b'fake')
+	(tmp_path / 'song.ogg').write_bytes(b'fake')
+	CH.save_offset_metadata(str(tmp_path), offset_ms=-2700, confidence=None, status='written', source='spreadsheet')
+
+	assert CH.is_offset_settled(str(tmp_path)) is True
+
+	with patch.object(CH, 'compute_offset') as mock_compute, patch.object(CH, 'OFFSET_SUPPORT', True):
+		result = CH.apply_audio_offset(str(tmp_path))
+
+	mock_compute.assert_not_called()
+	assert result is False

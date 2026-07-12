@@ -22,7 +22,7 @@ CH = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(CH)
 
 
-def _make_song_folder(home, name, video=False, video_confidence=None, offset_status=None, offset_confidence=None, offset_ms=None):
+def _make_song_folder(home, name, video=False, video_confidence=None, offset_status=None, offset_confidence=None, offset_ms=None, offset_source=None):
 	folder = home / name
 	folder.mkdir()
 	if video:
@@ -36,6 +36,7 @@ def _make_song_folder(home, name, video=False, video_confidence=None, offset_sta
 			'offset_ms': offset_ms if offset_ms is not None else 0,
 			'confidence': offset_confidence if offset_confidence is not None else 0.0,
 			'status': offset_status,
+			'source': offset_source if offset_source is not None else 'computed',
 			'updated_at': '2026-07-11T00:00:00+00:00',
 		}
 	if meta:
@@ -95,6 +96,18 @@ def test_no_review_flag_when_fully_confirmed(tmp_path):
 	row = _read_report_rows(report_path)[0]
 	assert row['needs_review'] == 'False'
 	assert row['offset_ms'] == '150'
+
+
+def test_offset_source_column_reflects_spreadsheet_vs_computed(tmp_path):
+	_make_song_folder(tmp_path, 'From Sheet', video=True, video_confidence=95, offset_status='written', offset_ms=-2700, offset_source='spreadsheet')
+	_make_song_folder(tmp_path, 'From Audio', video=True, video_confidence=95, offset_status='written', offset_ms=150, offset_source='computed')
+
+	report_path = CH.generate_library_report(str(tmp_path))
+
+	rows = {r['folder']: r for r in _read_report_rows(report_path)}
+	assert rows['From Sheet']['offset_source'] == 'spreadsheet'
+	assert rows['From Audio']['offset_source'] == 'computed'
+	assert rows['From Sheet']['needs_review'] == 'False'
 
 
 def test_ch_score_status_is_always_unknown(tmp_path):

@@ -39,7 +39,7 @@ TIP
 
 VIDEO OFFSET DETECTION
 - After a video downloads (or if one already exists), the script extracts the video's audio track and cross-correlates it against the song's own backing-track audio (`audio-offset-finder`, MFCC-based) to compute the millisecond offset needed to sync the video to the chart. That value is written to `song.ini` as `video_start_time`.
-- If a spreadsheet row has its own `Offset` value, that's used instead of computing one -- spreadsheet offsets are treated as pre-vetted and take priority.
+- If a spreadsheet row has its own `Offset` value, that's used instead of computing one -- spreadsheet offsets are treated as pre-vetted and take priority. Like computed offsets, a spreadsheet-sourced offset is recorded in `video_meta.json` once applied and is skipped on later runs -- it does not get rewritten (or re-read from the spreadsheet) every time you run the script.
 - Variable Frame Rate (VFR) source video is detected automatically and re-encoded to Constant Frame Rate (CFR) in place before offset computation, since VFR causes progressive desync that a single offset value can't fix.
 - Every attempt's outcome (including low-confidence or failed ones) is recorded in that song's `video_meta.json`, and a song whose offset already reached a settled result is skipped on the next run -- so re-running the script over your whole library doesn't recompute everything from scratch.
 - The confidence score is a z-score-like "standard score" from `audio-offset-finder`, not a percentage. Real-world scores on actual downloaded videos in early testing came in noticeably lower (around 2-3) than a clean synthetic test signal (around 8-9) -- if a lot of songs are landing in `low_confidence`, that threshold may need recalibrating; check `MIN_STANDARD_SCORE` in `clonehero_video_offset.py`.
@@ -47,7 +47,7 @@ VIDEO OFFSET DETECTION
 
 LIBRARY STATUS REPORT
 - Run `generate_library_report(homeFolder)` (from a Python shell, or wire it to a future CLI flag) to scan every song folder and write `library_status_report.csv` into your library root.
-- Each row shows: folder/artist/title, whether a video exists and its match confidence, whether an offset was computed and its confidence/status, a Clone Hero played-score status (currently always `unknown` -- see `SPEC.md`'s Open Questions for why), and a `needs_review` flag for anything missing or unconfirmed.
+- Each row shows: folder/artist/title, whether a video exists and its match confidence, whether an offset was set and its confidence/status/source (`computed` via audio correlation, or `spreadsheet`), a Clone Hero played-score status (currently always `unknown` -- see `SPEC.md`'s Open Questions for why), and a `needs_review` flag for anything missing or unconfirmed.
 - This is read-only -- it never modifies `song.ini`, `video_meta.json`, or any video file, so it's safe to run at any time to check overall library coverage.
 
 **Confidence workflow (summary)**

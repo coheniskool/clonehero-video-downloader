@@ -371,11 +371,13 @@ def is_offset_settled(song_folder: str) -> bool:
     return offset_meta.get("status") in SETTLED_OFFSET_STATUSES
 
 
-def save_offset_metadata(song_folder: str, offset_ms: int, confidence: float, status: str) -> None:
+def save_offset_metadata(song_folder: str, offset_ms: int, confidence: float, status: str, source: str = "computed") -> None:
     """Persist an offset-detection result into video_meta.json, merging with existing fields.
 
     Merges rather than overwrites so this never clobbers the video-match confidence/url
-    save_video_metadata() already wrote for the same folder.
+    save_video_metadata() already wrote for the same folder. source is "computed" (the
+    audio-correlation path) or "spreadsheet" (a pre-vetted offset from the lookup sheet)
+    -- both are settled once written, but the source is worth keeping for the library report.
     """
     metadata_path = Path(song_folder) / VIDEO_METADATA_FILENAME
     metadata: dict = {}
@@ -390,6 +392,7 @@ def save_offset_metadata(song_folder: str, offset_ms: int, confidence: float, st
         "offset_ms": offset_ms,
         "confidence": confidence,
         "status": status,
+        "source": source,
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
@@ -410,7 +413,7 @@ LIBRARY_REPORT_FILENAME = "library_status_report.csv"
 LIBRARY_REPORT_FIELDNAMES = [
     "folder", "artist", "title",
     "has_video", "video_confidence",
-    "has_offset", "offset_ms", "offset_confidence", "offset_status",
+    "has_offset", "offset_ms", "offset_confidence", "offset_status", "offset_source",
     "ch_score_status",
     "needs_review",
 ]
@@ -445,6 +448,7 @@ def _library_report_row(song_folder: Path) -> dict[str, object]:
         "offset_ms": offset_meta.get("offset_ms", ""),
         "offset_confidence": offset_meta.get("confidence", ""),
         "offset_status": offset_status,
+        "offset_source": offset_meta.get("source", ""),
         #always "unknown" -- see the Task 9 spike outcome in SPEC.md: parsing scores.bin
         #would require also reverse-engineering the undocumented songcache.bin to resolve
         #its opaque song identifiers to folders, for very little real data on top of that
@@ -1369,18 +1373,22 @@ def main() -> None:
 
             offset_from_sheet = False
             if sheet_match is not None:
-                offset = parse_offset(sheet_match.get('Offset'))
-                if offset is not None:
-                    if args.dry_run:
-                        print(f"[dry-run] Would update song.ini with offset {offset} (spreadsheet) -- not written.")
-                        offset_from_sheet = True
-                    else:
-                        updated_ini = patch_song_ini(currentSongFileFolder, offset)
-                        if updated_ini is not None:
-                            print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
-                            offset_from_sheet = True
+                if is_offset_settled(currentSongFileFolder):
+                    offset_from_sheet = True
                 else:
-                    print("Spreadsheet match found but no numeric offset was available.")
+                    offset = parse_offset(sheet_match.get('Offset'))
+                    if offset is not None:
+                        if args.dry_run:
+                            print(f"[dry-run] Would update song.ini with offset {offset} (spreadsheet) -- not written.")
+                            offset_from_sheet = True
+                        else:
+                            updated_ini = patch_song_ini(currentSongFileFolder, offset)
+                            if updated_ini is not None:
+                                print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
+                                save_offset_metadata(currentSongFileFolder, offset_ms=offset, confidence=None, status="written", source="spreadsheet")
+                                offset_from_sheet = True
+                    else:
+                        print("Spreadsheet match found but no numeric offset was available.")
 
             if not offset_from_sheet:
                 apply_audio_offset(currentSongFileFolder, dry_run=args.dry_run)
@@ -1464,18 +1472,22 @@ def main() -> None:
 
                 offset_from_sheet = False
                 if item['sheet_match'] is not None:
-                    offset = parse_offset(item['sheet_match'].get('Offset'))
-                    if offset is not None:
-                        if args.dry_run:
-                            print(f"[dry-run] Would update song.ini with offset {offset} (spreadsheet) -- not written.")
-                            offset_from_sheet = True
-                        else:
-                            updated_ini = patch_song_ini(item['song_folder'], offset)
-                            if updated_ini is not None:
-                                print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
-                                offset_from_sheet = True
+                    if is_offset_settled(item['song_folder']):
+                        offset_from_sheet = True
                     else:
-                        print("Spreadsheet match found but no numeric offset was available.")
+                        offset = parse_offset(item['sheet_match'].get('Offset'))
+                        if offset is not None:
+                            if args.dry_run:
+                                print(f"[dry-run] Would update song.ini with offset {offset} (spreadsheet) -- not written.")
+                                offset_from_sheet = True
+                            else:
+                                updated_ini = patch_song_ini(item['song_folder'], offset)
+                                if updated_ini is not None:
+                                    print(f"Updated {updated_ini.name} with offset {offset} (spreadsheet)")
+                                    save_offset_metadata(item['song_folder'], offset_ms=offset, confidence=None, status="written", source="spreadsheet")
+                                    offset_from_sheet = True
+                        else:
+                            print("Spreadsheet match found but no numeric offset was available.")
 
                 if not offset_from_sheet:
                     apply_audio_offset(item['song_folder'], dry_run=args.dry_run)
