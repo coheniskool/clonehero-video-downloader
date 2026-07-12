@@ -19,6 +19,11 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
 # Title cleaning patterns (adapted from Playlist Sentiment project)
 # Strips noise like "(feat. X)", "- Remastered", "(Live)", etc.
 _TRAILING_PAREN_NOISE_RE = re.compile(
@@ -69,7 +74,7 @@ COOKIES_FROM_BROWSER = ("chrome",)
 #running (Chrome holds an exclusive lock on it) -- see
 #https://github.com/yt-dlp/yt-dlp/issues/7271. If set, this takes priority over
 #COOKIES_FROM_BROWSER so you don't have to keep your browser closed during a run.
-COOKIES_FILE = None
+COOKIES_FILE = r"C:\Users\aaron\Downloads\chromewebstore.google.com_cookies.txt"
 
 #Clone Hero only recognizes a background video with exactly one of these
 #lowercase filenames sitting directly in the song folder.
@@ -888,6 +893,41 @@ def calculate_confidence(video_title: str, search_artist: str, search_title: str
     return score, reason_str
 
 
+def poll_typed_confidence(buffer: str) -> tuple[str, str | None]:
+    """Non-blocking check for a typed line on stdin (Windows only, via msvcrt).
+
+    Lets the sampling loop react to a typed confidence value between search
+    iterations without ever blocking on input() -- the only alternative would
+    be a background thread doing blocking input(), which would still be alive
+    (and competing for stdin) when prompt_confidence_threshold() later makes
+    its own input() call on the non-early-exit path, since a thread blocked in
+    input() can't be cleanly cancelled.
+
+    Returns (updated_buffer, completed_line). completed_line is only non-None
+    once Enter has been pressed; on non-Windows platforms (no msvcrt) this is
+    a no-op that always returns (buffer, None) unchanged.
+    """
+    if msvcrt is None:
+        return buffer, None
+    while msvcrt.kbhit():
+        ch = msvcrt.getwch()
+        if ch in ("\r", "\n"):
+            print()
+            return "", buffer
+        if ch == "\x08":
+            if buffer:
+                buffer = buffer[:-1]
+                sys.stdout.write("\b \b")
+                sys.stdout.flush()
+        elif ch == "\x03":
+            raise KeyboardInterrupt
+        else:
+            buffer += ch
+            sys.stdout.write(ch)
+            sys.stdout.flush()
+    return buffer, None
+
+
 def prompt_confidence_threshold(
     default: int = 70,
     sample_items: list[dict[str, object]] | None = None,
@@ -1072,6 +1112,14 @@ def main() -> None:
 
     sampled_entries = select_random_sample(folder_entries, sample_size=actual_sample_size)
 
+    # Lets the user type a confidence level at any point during sampling instead of
+    # always waiting for the whole sample to finish -- see poll_typed_confidence().
+    allow_typed_confidence = args.interactive and sys.stdin.isatty() and msvcrt is not None
+    if allow_typed_confidence:
+        print("(You can type a confidence level (0-100) and press Enter at any time during sampling to stop early and use it as the threshold.)")
+    typed_buffer = ""
+    entered_threshold: int | None = None
+
     # Rate only the sampled entries to guide threshold selection
     sampled_items: list[dict[str, object]] = []
     for entry in sampled_entries:
@@ -1130,15 +1178,36 @@ def main() -> None:
             'song_folder': currentSongFileFolder,
         })
 
+        if allow_typed_confidence:
+            typed_buffer, typed_line = poll_typed_confidence(typed_buffer)
+            if typed_line is not None:
+                typed_line = typed_line.strip()
+                if typed_line == "":
+                    pass
+                else:
+                    try:
+                        candidate_value = int(typed_line)
+                        if 0 <= candidate_value <= 100:
+                            entered_threshold = candidate_value
+                            print(f"Confidence level {entered_threshold} entered -- ending sampling early.")
+                            break
+                        print(f"'{typed_line}' is outside 0-100 -- ignored, continuing sampling.")
+                    except ValueError:
+                        print(f"'{typed_line}' isn't a valid number -- ignored, continuing sampling.")
+
     # Show sample statistics and prompt for threshold
     print_sample_confidence(sampled_items, population_size=population_size, sample_size=actual_sample_size)
 
-    confidence_threshold = prompt_confidence_threshold(
-        default=default_threshold,
-        sample_items=None,
-        sample_size=0,
-        interactive=args.interactive,
-    )
+    if entered_threshold is not None:
+        confidence_threshold = entered_threshold
+        print(f"Using confidence threshold entered during sampling: {confidence_threshold}")
+    else:
+        confidence_threshold = prompt_confidence_threshold(
+            default=default_threshold,
+            sample_items=None,
+            sample_size=0,
+            interactive=args.interactive,
+        )
 
     # Run spreadsheet indexing AFTER sampling and after the user has selected a threshold.
     # This gives the user a chance to choose threshold before spreadsheet overrides

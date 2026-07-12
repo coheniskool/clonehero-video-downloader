@@ -33,6 +33,7 @@ TIP
 - The script is interactive by default and will prompt for the confidence threshold after sampling rated candidates.
 - Use `--no-interactive` to skip the prompt and use the default threshold.
 - Use `--sample-size` to control how many rated folders are shown before choosing the threshold.
+- While sampling is running, you can type a confidence level (0-100) and press Enter at any time to stop sampling early and use that value as the threshold immediately, instead of waiting for the whole sample to finish. Windows only.
 - Use `--dry-run` to preview computed video offsets (logged to the console) without writing to any `song.ini`, re-encoding any video, or updating `video_meta.json`. Search and download still happen normally -- only the offset-writing step is previewed.
 - Use `--skip-library-scan` to skip the startup scan that repairs mis-named/mis-muxed video files already in your library.
 
