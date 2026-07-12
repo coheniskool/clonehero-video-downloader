@@ -16,9 +16,10 @@ COOKIES
 - Note: only the download step uses cookies. The initial YouTube search step does not pass cookies at all, so a bot-detection block during *search* isn't fixed by either of the above.
 
 PROCEDURE
-1. Change the `homeFolder` value in `CH-VideoScript.py` to the directory containing your individual song folders.
-   For example: `homeFolder = "clonehero-win64\Songs\Guitar Hero 3"`
-2. Run the program. If the `homeFolder` exists, the script will:
+1. Run the program. It will prompt for your Clone Hero songs library path at startup:
+   `Enter your Clone Hero songs library path (or press Enter for M:\_Organized\Songs): `
+   Type the path to the directory containing your individual song folders and press Enter, or just press Enter to accept the default shown (edit `DEFAULT_HOME_FOLDER` in `CH-VideoScript.py` if you always use a different library and don't want to type it every run). Pass `--library-path <path>` to skip the prompt entirely (also used automatically with `--no-interactive`).
+2. If the path exists, the script will:
    - load the spreadsheet lookup table
    - sample a small, statistically-derived subset of your song folders and rate those first to help you choose a confidence threshold
    - prompt you (interactive mode) with sample statistics and example matches so you can pick a threshold
@@ -29,6 +30,7 @@ PROCEDURE
 4. After each video downloads, the script automatically detects the audio/video sync offset and writes it to that song's `song.ini` as `video_start_time` -- see **Video Offset Detection** below.
 
 TIP
+- Use `--library-path <path>` to skip the startup path prompt (useful for scripting/automation).
 - Use `--threshold` to override the default auto-download cutoff.
 - The script is interactive by default and will prompt for the confidence threshold after sampling rated candidates.
 - Use `--no-interactive` to skip the prompt and use the default threshold.

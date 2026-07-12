@@ -63,6 +63,11 @@ VIDEO_FILE_EXTENSIONS = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".flv"
 VIDEO_METADATA_FILENAME = "video_meta.json"
 search_failures = 0
 
+#Default answer to the library-path prompt at startup (press Enter to accept it).
+#Change this if you always point the script at the same library and don't want to
+#type it every run; --library-path overrides both this and the prompt entirely.
+DEFAULT_HOME_FOLDER = r"M:\_Organized\Songs"
+
 #Browser to pull YouTube session cookies from (reduces bot-checks on batch runs).
 #Set to None to download without cookies. Only used if COOKIES_FILE is not set below.
 COOKIES_FROM_BROWSER = ("chrome",)
@@ -897,6 +902,16 @@ def calculate_confidence(video_title: str, search_artist: str, search_title: str
     return score, reason_str
 
 
+def prompt_library_path(default: str, interactive: bool = False) -> str:
+    """Prompt for the Clone Hero songs library folder, falling back to default
+    unless interactivity is explicitly requested (matches prompt_confidence_threshold)."""
+    if not interactive or not sys.stdin.isatty():
+        return default
+
+    entered = input(f"Enter your Clone Hero songs library path (or press Enter for {default}): ").strip()
+    return entered if entered else default
+
+
 def poll_typed_confidence(buffer: str) -> tuple[str, str | None]:
     """Non-blocking check for a typed line on stdin (Windows only, via msvcrt).
 
@@ -995,6 +1010,7 @@ def download_video_if_needed(url: str, currentSongFileFolder: str, candidate_con
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download Clone Hero videos based on song folders and spreadsheet metadata.")
+    parser.add_argument("--library-path", type=str, default=None, help="Path to your Clone Hero songs library folder. Skips the startup prompt when set.")
     parser.add_argument("--threshold", type=int, default=None, help="Minimum confidence required to auto-download without confirmation.")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--interactive", action="store_true", dest="interactive", help="Prompt for the confidence threshold.")
@@ -1020,13 +1036,16 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    #CHANGE THE HOME FOLDER TO THE FOLDER PATH YOU WANT TO DOWNLOAD SONGS FOR
-    homeFolder = r"M:\_Organized\Songs"
+    args = parse_args()
+
+    #Falls back to this default (press Enter at the prompt to accept it) unless
+    #--library-path was passed, or the prompt is skipped (non-interactive/non-tty).
+    homeFolder = args.library_path or prompt_library_path(DEFAULT_HOME_FOLDER, interactive=args.interactive)
 
     # Validate that the home folder exists
     if not os.path.exists(homeFolder):
         print(f"ERROR: Home folder does not exist: {homeFolder}")
-        print("Please update the homeFolder path in the script.")
+        print("Re-run and enter a valid path, or pass --library-path <path>.")
         input("Press Enter to exit...")
         exit(1)
 
@@ -1038,8 +1057,6 @@ def main() -> None:
     os.chdir(homeFolder)
     print(os.getcwd())
     print()
-
-    args = parse_args()
 
     if not args.skip_library_scan:
         scan_and_fix_video_library(homeFolder)
