@@ -15,6 +15,11 @@ COOKIES
 - If you don't want to keep Chrome closed during a run, export your cookies to a static file instead (e.g. with the "Get cookies.txt LOCALLY" browser extension) and set `COOKIES_FILE = "cookies.txt"` (or a full path) at the top of `CH-VideoScript.py`. `COOKIES_FILE` takes priority over `COOKIES_FROM_BROWSER` when set, and reading a static file has no locking issue.
 - Note: only the download step uses cookies. The initial YouTube search step does not pass cookies at all, so a bot-detection block during *search* isn't fixed by either of the above.
 
+VIDEO FORMAT
+- Downloads prefer MP4 first, confirmed working by real playtesting. An earlier attempt to prefer WebM was reverted after Clone Hero's own log showed `Error: Unsupported video codec 'VP9'` and the video never rendering at all -- YouTube's WebM streams are almost always VP9 (or AV1) now, and this Clone Hero build only decodes VP8 WebM. If a video has no MP4 stream at all, the WebM fallback is explicitly constrained to `vcodec=vp8` so it can never silently grab an incompatible stream.
+- The startup library scan (`scan_and_fix_video_library()`, runs unless `--skip-library-scan`) now also checks the codec of every *existing* `video.webm` it finds (both already-canonically-named ones and ones it's about to rename into place) and **deletes** it if the codec isn't VP8, logging it as "removed for an unsupported codec." That song then has no video file, so it's picked up for a fresh (MP4) download on the same run.
+- A full library scan run during development found **455 pre-existing WebM videos** (416 AV1, 39 VP9) that predated this fix entirely and were silently unplayable in Clone Hero -- none of that was caused by this tool's downloads; it looks like whatever process originally built the library grabbed AV1/VP9 streams without codec awareness. If you're seeing a lot of `[unsupported codec]` removals on your first run after updating, that's expected cleanup, not a new problem.
+
 PROCEDURE
 1. Run the program. It will prompt for your Clone Hero songs library path at startup:
    `Enter your Clone Hero songs library path (or press Enter for M:\_Organized\Songs): `

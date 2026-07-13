@@ -90,6 +90,29 @@ def probe_frame_rate(video_path):
         return False
 
 
+def probe_video_codec(video_path):
+    #Returns the video stream's codec name (e.g. "h264", "vp8", "vp9"), or None if
+    #ffprobe fails or no video stream is found. Used to catch WebM files encoded with
+    #VP9 -- YouTube's default for "bestvideo[ext=webm]" on virtually all current
+    #uploads -- which this Clone Hero build cannot decode at all (confirmed via a real
+    #playtest: "Unsupported video codec 'VP9'", video never renders). Only VP8 is safe.
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'stream=codec_name',
+             '-of', 'json', str(video_path)],
+            check=True, capture_output=True, text=True,
+        )
+        data = json.loads(result.stdout)
+        streams = data.get('streams', [])
+        if not streams:
+            return None
+        return streams[0].get('codec_name')
+    except Exception as e:
+        logging.error(f"ffprobe codec probe error {video_path}: {e}")
+        return None
+
+
 def reencode_to_cfr(video_path, fps=30):
     #Overwrites video_path in place with a constant-frame-rate re-encode, no backup kept
     #(confirmed decision -- keeps disk usage flat for a 5,000+ song library). Writes to a

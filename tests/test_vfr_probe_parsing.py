@@ -68,6 +68,47 @@ def test_returns_false_and_logs_on_ffprobe_failure():
 		assert module.probe_frame_rate("video.mp4") is False
 
 
+VP9_CODEC_JSON = """
+{
+    "streams": [
+        {
+            "codec_name": "vp9"
+        }
+    ]
+}
+"""
+
+VP8_CODEC_JSON = """
+{
+    "streams": [
+        {
+            "codec_name": "vp8"
+        }
+    ]
+}
+"""
+
+
+def test_probe_video_codec_returns_codec_name():
+	with patch.object(module.subprocess, "run", return_value=_fake_completed_process(VP9_CODEC_JSON)):
+		assert module.probe_video_codec("video.webm") == "vp9"
+
+
+def test_probe_video_codec_returns_vp8():
+	with patch.object(module.subprocess, "run", return_value=_fake_completed_process(VP8_CODEC_JSON)):
+		assert module.probe_video_codec("video.webm") == "vp8"
+
+
+def test_probe_video_codec_returns_none_when_no_video_stream():
+	with patch.object(module.subprocess, "run", return_value=_fake_completed_process(NO_VIDEO_STREAM_JSON)):
+		assert module.probe_video_codec("video.webm") is None
+
+
+def test_probe_video_codec_returns_none_and_logs_on_ffprobe_failure():
+	with patch.object(module.subprocess, "run", side_effect=OSError("ffprobe not found")):
+		assert module.probe_video_codec("video.webm") is None
+
+
 def test_reencode_to_cfr_overwrites_in_place_with_no_backup(tmp_path):
 	video = tmp_path / "video.mp4"
 	video.write_bytes(b"original-bytes")

@@ -90,7 +90,7 @@ CANONICAL_VIDEO_NAMES = {"video.mp4", "video.avi", "video.webm", "video.ogv"}
 _YTDLP_FRAGMENT_RE = re.compile(r"\.f\d+\.|\.part$|\.ytdl$|\.temp\.", re.IGNORECASE)
 
 try:
-    from clonehero_video_offset import extract_audio, compute_offset, find_song_audio, find_video_file, probe_frame_rate, reencode_to_cfr
+    from clonehero_video_offset import extract_audio, compute_offset, find_song_audio, find_video_file, probe_frame_rate, probe_video_codec, reencode_to_cfr
     OFFSET_SUPPORT = True
 except ImportError as exc:
     OFFSET_SUPPORT = False
@@ -232,7 +232,7 @@ def scan_song_folder_video(song_dir: Path) -> dict[str, str]:
 
     Returns {'status': ..., 'detail': ...} where status is one of:
     'ok', 'no_video', 'fixed_rename', 'fixed_remux', 'broken_fragment',
-    'remux_failed', 'unrecognized'.
+    'unsupported_codec', 'remux_failed', 'unrecognized'.
 
     Only the first fixable file in a folder is repaired per call; a folder
     with multiple leftover variants gets cleaned up incrementally over
@@ -247,6 +247,16 @@ def scan_song_folder_video(song_dir: Path) -> dict[str, str]:
 
     for p in relevant:
         if p.name in CANONICAL_VIDEO_NAMES:
+            if p.name.lower().endswith(".webm") and OFFSET_SUPPORT:
+                #YouTube's "bestvideo[ext=webm]" is almost always VP9 now, which this
+                #Clone Hero build cannot decode at all (confirmed via a real playtest).
+                #Without this check, a pre-existing VP9 file would be accepted as "ok"
+                #forever -- has_existing_video() would then always see a video present
+                #and skip any future re-download, leaving it permanently broken.
+                codec = probe_video_codec(p)
+                if codec is not None and codec != "vp8":
+                    p.unlink()
+                    return {"status": "unsupported_codec", "detail": f"{p.name} ({codec}) removed -- needs a fresh download"}
             return {"status": "ok", "detail": p.name}
 
     for p in relevant:
@@ -263,6 +273,11 @@ def scan_song_folder_video(song_dir: Path) -> dict[str, str]:
         if lower.endswith(".webm"):
             target = song_dir / "video.webm"
             p.rename(target)
+            if OFFSET_SUPPORT:
+                codec = probe_video_codec(target)
+                if codec is not None and codec != "vp8":
+                    target.unlink()
+                    return {"status": "unsupported_codec", "detail": f"{p.name} ({codec}) removed -- needs a fresh download"}
             return {"status": "fixed_rename", "detail": f"{p.name} -> video.webm"}
 
         if lower.endswith(".mkv"):
@@ -291,6 +306,7 @@ def scan_and_fix_video_library(home_folder: str) -> None:
 
     counts: dict[str, int] = {}
     broken: list[str] = []
+    bad_codec: list[str] = []
 
     for folder in sorted(Path(home_folder).iterdir()):
         if not folder.is_dir():
@@ -305,6 +321,9 @@ def scan_and_fix_video_library(home_folder: str) -> None:
             print(f"  Remuxed: {folder.name}: {result['detail']}")
         elif result["status"] == "broken_fragment":
             broken.append(folder.name)
+        elif result["status"] == "unsupported_codec":
+            bad_codec.append(folder.name)
+            print(f"  Removed [unsupported codec]: {folder.name}: {result['detail']}")
         elif result["status"] in ("remux_failed", "unrecognized"):
             print(f"  WARNING [{result['status']}]: {folder.name}: {result['detail']}")
 
@@ -317,6 +336,10 @@ def scan_and_fix_video_library(home_folder: str) -> None:
     if broken:
         print(f"{len(broken)} broken/incomplete download fragment(s) need a re-download (not auto-fixable):")
         for name in broken:
+            print(f"  - {name}")
+    if bad_codec:
+        print(f"{len(bad_codec)} video(s) removed for an unsupported codec (non-VP8 WebM, e.g. VP9/AV1) -- will be re-downloaded as MP4 on this run:")
+        for name in bad_codec:
             print(f"  - {name}")
     print("=" * 70)
     print()
