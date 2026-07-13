@@ -66,6 +66,52 @@ def find_video_file(song_dir):
     return None
 
 
+#Clone Hero requires these exact literal filenames -- confirmed against the
+#official wiki (Adding Custom Songs / song.ini Guide). A folder whose .ini or
+#chart file is numeric-ID-suffixed (song_2400.ini, notes_454.chart) instead of
+#literal can't be loaded by the game at all, regardless of file content being
+#otherwise correct.
+CANONICAL_CHART_NAMES = {'song.ini', 'notes.chart', 'notes.mid'}
+
+
+def scan_song_folder_chart_names(song_dir):
+    """Detect (but do not verify or rename) ID-suffixed chart filenames.
+
+    Returns {'status': ..., 'detail': ...} where status is one of:
+    'ok' (song.ini and a notes.chart/.mid are both present with literal
+    names), 'id_suffixed' (the .ini and/or chart file is numeric-ID-suffixed
+    -- detail lists which), 'no_ini' (no *.ini file at all), 'no_chart_file'
+    (a literal or ID-suffixed .ini exists but no notes.chart/.mid does).
+
+    This is detection only -- verifying that an ID-suffixed file's content
+    actually matches the folder's stated song (Tasks 2/3), and the rename/
+    collision/relocation logic (Task 4), are separate steps layered on top.
+    """
+    ini_files = sorted(song_dir.glob('*.ini'))
+    if not ini_files:
+        return {'status': 'no_ini', 'detail': ''}
+
+    ini_file = next((p for p in ini_files if p.name.lower() == 'song.ini'), ini_files[0])
+
+    chart_files = sorted(song_dir.glob('notes.chart')) + sorted(song_dir.glob('notes.mid'))
+    chart_file = next((p for p in chart_files if p.name.lower() in ('notes.chart', 'notes.mid')), None)
+    if chart_file is None:
+        chart_candidates = sorted(song_dir.glob('notes_*.chart')) + sorted(song_dir.glob('notes_*.mid'))
+        chart_file = chart_candidates[0] if chart_candidates else None
+
+    if chart_file is None:
+        return {'status': 'no_chart_file', 'detail': ini_file.name}
+
+    id_suffixed = [
+        p.name for p in (ini_file, chart_file)
+        if p.name.lower() not in CANONICAL_CHART_NAMES
+    ]
+    if id_suffixed:
+        return {'status': 'id_suffixed', 'detail': ', '.join(id_suffixed)}
+
+    return {'status': 'ok', 'detail': f'{ini_file.name}, {chart_file.name}'}
+
+
 def probe_frame_rate(video_path):
     #Variable Frame Rate (VFR) source video causes progressive, cumulative audio/video
     #desync that a single static video_start_time offset cannot fix -- it only corrects
