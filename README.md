@@ -4,6 +4,20 @@ Short python script that allows you to download the the top YouTube music video 
 Disclaimer
 -this is my first github repository so please message me with any feedback on how I can improve upon my work or the way I uploaded my work! :)
 
+FEATURES AT A GLANCE
+- All of these are separate, standalone modes -- running one does **not** run the others. Each is documented in full further down; this table is just so you don't have to read the whole file to know what exists.
+
+| What it does | Command |
+|---|---|
+| Download a background video for every song, auto-detect sync offset | `python CH-VideoScript.py` (default mode -- also runs a startup video-naming repair scan unless `--skip-library-scan`) |
+| Fix ID-suffixed `song.ini`/`notes.chart`/`notes.mid`/audio-stem/album-art filenames | `python CH-VideoScript.py --scan-chart-names` |
+| Fill blank `song.ini` metadata (year/genre/charter/album) from Chorus Encore | `python CH-VideoScript.py --enrich-metadata` |
+| Find and relocate duplicate charts of the same song | `python dedupe_report.py --library-path <path>` (separate script, not a flag) |
+| Library-wide video/offset coverage report (CSV) | `generate_library_report(homeFolder)` from a Python shell (not yet wired to a CLI flag) |
+
+- Every mode that writes anything supports `--dry-run` to preview without touching a file (`dedupe_report.py` has its own `--dry-run`, same behavior).
+- Full flag reference (all of `CH-VideoScript.py`'s flags together): see **ALL COMMAND-LINE FLAGS** near the end of this file.
+
 REQUIREMENTS
 - Must have youtube-dl downloaded (https://github.com/ytdl-org/youtube-dl/blob/master/README.md#readme)
 - Requires Python and the packages in `pip-install.txt` installed in the project virtualenv (`pip install -r pip-install.txt`)
@@ -137,3 +151,27 @@ Traceback (most recent call last):
 ```
 
 If you see the `difflib` traceback above, inspect your spreadsheet CSV for malformed or empty `Song` cells and re-run.
+
+ALL COMMAND-LINE FLAGS
+
+`python CH-VideoScript.py [flags]`
+
+| Flag | Effect |
+|---|---|
+| `--library-path <path>` | Path to your Clone Hero songs library folder. Skips the startup prompt when set. |
+| `--threshold <int>` | Minimum confidence required to auto-download without confirmation. |
+| `--interactive` / `--no-interactive` | Prompt for the confidence threshold (default), or skip the prompt and use the default threshold. Mutually exclusive. |
+| `--sample-size <int>` | Max number of rated songs to sample before asking for a threshold; Cochran's 95% CI formula picks the size when this is 0 (default). |
+| `--skip-library-scan` | Skip the startup scan that repairs mis-named/mis-muxed video files already in your library. |
+| `--dry-run` | Preview without writing: applies to the normal offset-writing step, and to `--scan-chart-names`/`--enrich-metadata` when combined with either. |
+| `--scan-chart-names` | Opt-in, standalone (see CHART FILE RENAME above) -- runs instead of the normal search/download flow. |
+| `--enrich-metadata` | Opt-in, standalone (see METADATA ENRICHMENT above) -- runs instead of the normal search/download flow. |
+
+`python dedupe_report.py [flags]` (separate script)
+
+| Flag | Effect |
+|---|---|
+| `--library-path <path>` | **Required.** Path to your Clone Hero songs library folder. |
+| `--dry-run` | Compute groups/scores/borrow-candidate flags and log them without moving any folder. |
+
+`--scan-chart-names` and `--enrich-metadata` are mutually exclusive with each other and with the normal download flow in practice -- whichever is passed first in the code's check order (`--scan-chart-names`, then `--enrich-metadata`) runs and the script exits; pass only one at a time.
