@@ -6,8 +6,10 @@
 
 import json
 import os
+import re
 import subprocess
 import tempfile
+from difflib import SequenceMatcher
 from pathlib import Path
 import logging
 from logging.handlers import RotatingFileHandler
@@ -110,6 +112,78 @@ def scan_song_folder_chart_names(song_dir):
         return {'status': 'id_suffixed', 'detail': ', '.join(id_suffixed)}
 
     return {'status': 'ok', 'detail': f'{ini_file.name}, {chart_file.name}'}
+
+
+#Duplicated from CH-VideoScript.py's normalize_lookup_value() rather than
+#imported, to avoid a circular import (CH-VideoScript.py imports FROM this
+#module). Keep in sync if that logic ever changes.
+def _normalize_for_match(value):
+    if value is None:
+        return ''
+    return re.sub(r'[^a-z0-9]+', ' ', str(value).strip().lower()).strip()
+
+
+#Both Name AND Artist must independently clear this -- set higher than the
+#project's existing YouTube-match "high confidence" band (70-89) because a
+#wrong rename is a less-reversible mistake than downloading a wrong video.
+CHART_NAME_MATCH_THRESHOLD = 85
+
+_CHART_NAME_RE = re.compile(r'(?im)^\s*name\s*=\s*"([^"]*)"')
+_CHART_ARTIST_RE = re.compile(r'(?im)^\s*artist\s*=\s*"([^"]*)"')
+
+
+def read_chart_song_fields(chart_path):
+    """Read the [Song] section's Name/Artist text fields from a .chart file.
+
+    Plain-text regex, not a full .chart parser -- matches this project's
+    existing byte-preserving-regex philosophy. Returns {} if the file can't
+    be read or neither field is present.
+    """
+    try:
+        text = chart_path.read_text(encoding='utf-8', errors='ignore')
+    except OSError:
+        return {}
+    fields = {}
+    name_match = _CHART_NAME_RE.search(text)
+    if name_match:
+        fields['name'] = name_match.group(1)
+    artist_match = _CHART_ARTIST_RE.search(text)
+    if artist_match:
+        fields['artist'] = artist_match.group(1)
+    return fields
+
+
+def verify_chart_content_match(song_dir, ini_fields):
+    """Fuzzy-verify a .chart file's embedded Name/Artist against song.ini.
+
+    Returns (matched, reason). Both Name and Artist must independently score
+    >= CHART_NAME_MATCH_THRESHOLD (SequenceMatcher ratio*100) -- an OR check
+    would wrongly pass the real Mr. Roboto case, where Artist matches ("Styx")
+    but Name is a completely different song ("Rock & Roll Feeling").
+
+    .mid verification (no embedded text metadata to compare) is a separate
+    duration-based fallback -- see Task 3, not handled here.
+    """
+    chart_files = sorted(song_dir.glob('*.chart'))
+    if not chart_files:
+        return False, 'no .chart file found to verify against'
+
+    chart_fields = read_chart_song_fields(chart_files[0])
+    if not chart_fields:
+        return False, f'{chart_files[0].name}: no Name/Artist fields found'
+
+    scores = {}
+    for key in ('name', 'artist'):
+        chart_value = _normalize_for_match(chart_fields.get(key))
+        ini_value = _normalize_for_match(ini_fields.get(key))
+        scores[key] = round(SequenceMatcher(None, chart_value, ini_value).ratio() * 100)
+
+    failing = [key for key, score in scores.items() if score < CHART_NAME_MATCH_THRESHOLD]
+    if failing:
+        detail = ', '.join(f'{key} score {scores[key]}' for key in failing)
+        return False, f'{chart_files[0].name}: {detail} below threshold {CHART_NAME_MATCH_THRESHOLD}'
+
+    return True, ''
 
 
 def probe_frame_rate(video_path):
