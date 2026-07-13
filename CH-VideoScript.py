@@ -987,12 +987,17 @@ def download_video_if_needed(url: str, currentSongFileFolder: str, candidate_con
     #never a mismatched mp4-video/opus-audio pair, which yt-dlp can only hold in .mkv
     #(Clone Hero doesn't recognize .mkv, and a literal "video.mp4" outtmpl lets
     #yt-dlp tack the real extension on top of it, producing "video.mp4.mkv"/"video.mp4.webm").
-    #WebM is preferred over MP4: Clone Hero's own wiki recommends it for cross-platform
-    #stability, and the game itself warns at startup that MP4 video backgrounds "wont
-    #work on all game platforms" (Linux/Mac builds only recognize .webm/.ogv).
+    #MP4 first, confirmed working: a WebM-first attempt was tried and reverted after
+    #real playtesting showed Clone Hero throwing "Unsupported video codec 'VP9'" and
+    #never rendering the video at all -- YouTube's "bestvideo[ext=webm]" is virtually
+    #always VP9 now (VP8 is largely gone from current uploads), and this Clone Hero
+    #build only decodes VP8 webm, not VP9. The webm fallback below is constrained to
+    #vcodec=vp8 specifically so it can never again silently grab an incompatible VP9
+    #stream -- in practice this fallback will rarely match anything on modern YouTube
+    #videos, which is fine: MP4 is the confirmed-working default.
     ydl_opts = {
         'outtmpl': os.path.join(currentSongFileFolder, 'video.%(ext)s'),
-        'format': 'bestvideo[ext=webm]+bestaudio[ext=webm]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=webm]/best',
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=webm][vcodec=vp8]+bestaudio[ext=webm]/best[ext=mp4]/best[ext=webm][vcodec=vp8]/best',
         'overwrites': False,
         'noplaylist': 1,
     }
