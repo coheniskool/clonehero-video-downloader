@@ -9,6 +9,8 @@ REQUIREMENTS
 - Requires Python and the packages in `pip-install.txt` installed in the project virtualenv (`pip install -r pip-install.txt`)
 - `ffmpeg`/`ffprobe` must be installed and on PATH -- used both for downloading (merging video/audio streams) and for offset detection (audio extraction, VFR detection/re-encode)
 - numpy must land in the `>=2,<=2.4` window if you're installing manually: numpy 1.26.x breaks scipy's C extensions on newer Python, and numpy 2.5+ breaks numba (a dependency of `audio-offset-finder`, used for video offset detection). `pip-install.txt` already pins this correctly.
+- `requests` -- used by `chorus_client.py` (Chorus Encore metadata lookups, shared by `--enrich-metadata` and `dedupe_report.py`)
+- `pyacoustid` (Python package) **and** `fpcalc` (a separate binary, must be on PATH) -- used only by `dedupe_report.py`'s duplicate detection. Get `fpcalc` from the official [AcoustID/Chromaprint release](https://acoustid.org/chromaprint), not an arbitrary download -- same trust bar as `ffmpeg`. Without it, `dedupe_report.py` still runs and reports candidate groups, but can never confirm or move anything (see **Duplicate Detection** below).
 
 COOKIES
 - By default the script pulls your YouTube session cookies from Chrome (`COOKIES_FROM_BROWSER = ("chrome",)` in `CH-VideoScript.py`) to reduce bot-detection false positives during downloads. This requires Chrome to be **fully closed** (not just the window -- check Task Manager for lingering `chrome.exe` processes) while the script runs, since Chrome locks its cookie database while open; otherwise every download fails with `Could not copy Chrome cookie database` (see https://github.com/yt-dlp/yt-dlp/issues/7271).
@@ -56,6 +58,31 @@ LIBRARY STATUS REPORT
 - Run `generate_library_report(homeFolder)` (from a Python shell, or wire it to a future CLI flag) to scan every song folder and write `library_status_report.csv` into your library root.
 - Each row shows: folder/artist/title, whether a video exists and its match confidence, whether an offset was set and its confidence/status/source (`computed` via audio correlation, or `spreadsheet`), a Clone Hero played-score status (currently always `unknown` -- see `SPEC.md`'s Open Questions for why), and a `needs_review` flag for anything missing or unconfirmed.
 - This is read-only -- it never modifies `song.ini`, `video_meta.json`, or any video file, so it's safe to run at any time to check overall library coverage.
+
+CHART FILE RENAME (`--scan-chart-names`)
+- Some song folders end up with numeric-ID-suffixed chart files instead of the literal names Clone Hero requires -- `song_2400.ini` instead of `song.ini`, `notes_454.chart` instead of `notes.chart`. Clone Hero can't load these folders at all. The same bug also affects audio-stem filenames (`song_1877.ogg` instead of `song.ogg`) and album art (`album_827.png` instead of `album.png`).
+- Run `python CH-VideoScript.py --scan-chart-names` (opt-in, standalone -- runs instead of the normal search/download flow) to scan the whole library. For each ID-suffixed file found, the script verifies the content actually matches the folder's stated song before renaming: `.chart` files via fuzzy-matching the embedded `Name`/`Artist` against `song.ini`; `.mid` files (no embedded metadata) via comparing the paired audio's real duration against `song.ini`'s `song_length`.
+- If content is confirmed, the file is renamed. If it can't be confirmed -- or a stem/album-art role has more than one candidate file (ambiguous, can't be resolved automatically) -- the **whole folder** is relocated intact to a `_needs_review/` folder at your library root, never renamed under a guess.
+- Use `--dry-run` to preview what would be renamed/relocated without touching any file.
+- A folder that finishes fully verified is marked `confirmed_ok` in its `video_meta.json`, so a rerun skips it -- only new or previously-flagged folders are reprocessed.
+
+METADATA ENRICHMENT (`--enrich-metadata`)
+- Looks up each song on the [Chorus Encore](https://www.enchor.us/) chart database by artist+title and fills in **blank or missing** `song.ini` fields (`year`, `genre`, `charter`, `album`) from a confident match. It never overwrites a field that already has a value.
+- Run `python CH-VideoScript.py --enrich-metadata` (opt-in, standalone). Combine with `--dry-run` to preview without writing anything.
+- Album art is **not** supported by this feature -- confirmed that Chorus Encore's API doesn't track album art as queryable/returned data at all (only a hash of the art file, no URL or image data).
+
+DUPLICATE DETECTION (`dedupe_report.py`)
+- A separate script (not a flag on `CH-VideoScript.py`) that finds duplicate charts of the same song from different sources, scores each copy, and moves everything except the best-scoring "keeper" into a `_duplicates_review` folder at your library root for you to review and eventually delete by hand. **Nothing is ever deleted automatically.**
+- Run `python dedupe_report.py --library-path <path>`. Combine with `--dry-run` to preview groups/scores without moving anything.
+- Requires `fpcalc` (see REQUIREMENTS above) to actually confirm and act on duplicates -- fuzzy title/artist matching alone only produces *candidate* groups (e.g. it correctly won't group a studio track with a "(Live)" version of the same song, but it also can't tell two different recordings of the exact same title apart without audio fingerprinting). Without `fpcalc` installed, the script still runs and reports how many candidate groups it found, but confirms and moves nothing.
+- The report also flags "borrow candidates" -- things a discarded copy has that the keeper lacks (a Pro Drums chart, a set difficulty, a background video) -- so you know if a manual merge might be worth doing before deleting that copy. This is report-only; the script never merges anything itself.
+- Scoring favors instrument/chart completeness above all else (the actual playable content), with video presence, sync confidence, metadata completeness, and a Chorus quality signal as smaller factors.
+
+WHICH TOOL DO I RUN, AND WHAT DO I DO ABOUT THE RESULT?
+- **`_needs_review/`** (from `--scan-chart-names`): a folder whose chart/audio/album-art content couldn't be confidently verified. Open it, figure out what it actually is by hand, fix the naming yourself, and move it back into your library root.
+- **`_duplicates_review/`** (from `dedupe_report.py`): folders that lost to a better-scoring copy of the same song. Read the report for the "borrow candidate" notes, then delete them yourself once you're satisfied nothing's worth keeping.
+- **`--enrich-metadata`'s output**: no folder relocation at all -- it only ever edits `song.ini` fields in place, and only fills things in that were blank. Check the console log for which songs got fields filled, or which had no confident match.
+- If you're not sure which tool produced a given folder/log line, check `_needs_review_manifest.jsonl` / `_duplicates_review_manifest.jsonl` at your library root -- both record every relocation with its reason.
 
 **Confidence workflow (summary)**
 

@@ -244,13 +244,13 @@ Every open question flagged below is meant to be resolved (a real decision made 
 
 This phase exists specifically to unblock `tasks/todo.md`'s long-pending Task 12 (in-game playtest for the offset feature), which turned out to be blocked by exactly the problem Track C solves — see Context above. Placed here, right after Track C, rather than at the end, since there's no reason to make the user wait through Phase 6's docs/full-validation pass before this gets resolved.
 
-- [ ] **Task 15**: Confirm the real scope of the duplicate-blocker (S)
-  - Acceptance: for each of the 4 Test-folder songs (`Helena`, `I Write Sins Not Tragedies`, `Snow (Hey Oh)`, `My Name Is Jonas`), confirm in the real library how many duplicate copies exist, and whether any copy already has a settled `offset_status`/`video_start_time` in its `video_meta.json`. This can piggyback on Task 10's census rather than being fully separate work.
-  - Verify: manual inspection, recorded in task notes
+- [x] **Task 15**: Confirm the real scope of the duplicate-blocker (S)
+  - **Done 2026-07-14.** Real copy counts (from Task 10's census): `Helena` — 1 copy, no duplicate at all (was never actually part of the blocker). `I Write Sins Not Tragedies` — 2 copies. `Snow (Hey Oh)` — 2 copies. `My Name Is Jonas` — 4 copies. **None of the 8 duplicate copies (nor `Helena`) has a `video_meta.json` in the real library at all** — the offset feature has never been run against `M:\_Organized\Songs` for any of these songs, only against the small `M:\_organized\Test` staging copies. There's nothing to "resume" or conflict with; Task 16 just needs one clean copy picked and the offset feature run fresh against it.
+  - Verify: manual inspection via direct file check, recorded above
   - Files: none (investigation task)
 
-- [ ] **Task 16**: Re-run the offset feature's Task 12 playtest against a deduped/unambiguous song (S)
-  - Acceptance: after Track C (Task 14) produces a single keeper for at least one of the previously-duplicated candidate songs (or confirms an already-unambiguous one), load that song in Clone Hero and confirm the video syncs — the actual acceptance bar `tasks/todo.md` Task 12 has been waiting on.
+- [ ] **Task 16 — YOURS TO RUN**: Re-run the offset feature's Task 12 playtest against a deduped/unambiguous song (S)
+  - Acceptance: pick one clean copy of `I Write Sins Not Tragedies`, `Snow (Hey Oh)`, or `My Name Is Jonas` (dedupe once `fpcalc` is installed and you've run `dedupe_report.py` for real, or just pick one copy by hand right now — nothing is resolved automatically yet), run `python CH-VideoScript.py` against it to compute+write an offset, then load it in Clone Hero and confirm the video syncs — the actual acceptance bar `tasks/todo.md`'s Task 12 has been waiting on.
   - Verify: manual in-game check
   - Files: `tasks/todo.md` (mark Task 12 resolved with the result)
 

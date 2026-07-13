@@ -56,29 +56,29 @@ Every open question below is meant to be resolved **before** the task immediatel
 ## Phase 4 — Track C: Duplicate Detection (depends on Task 6; Task 12 HARD-depends on Task 4)
 - [x] Task 10: Duplicate-count estimate (S) — **336 candidate groups, 844 folders (~16.5% of library)**; found + fixed a real undercount bug (bracket-suffix noise like `[dup253]` wasn't being stripped before normalizing); all 3 known real cases confirmed caught
 - [x] Task 11: Fuzzy candidate grouping, incl. Live/Acoustic/Remix negative case (M) — commit b5491f0. Caught a real bug: parse_folder_name() silently strips "(Live)"/"(Acoustic)"/"(Remix)" as noise before the version-tag check could see it — fixed by reading the tag from the raw name first.
-- [ ] Task 11b: fpcalc/pyacoustid (official release only) + confirm_group() fingerprinting; evaluate Chorus hash fields as an alternative (M)
+- [x] Task 11b: fpcalc/pyacoustid + confirm_group() fingerprinting (M) — commit 3d2020a. Resolved: Chorus hash fields (md5/chartHash) are chart-file hashes, not audio fingerprints — cannot substitute. Neither pyacoustid nor fpcalc installed in dev environment; unit-tested against mocked calls only.
 
-> **Resolve first**: exact scoring weights/formula, informed by Task 10's real count and the real dup2/dup253/dup2-4 examples.
+> **RESOLVED**: instrument_count (5/diff key, max 65) dominates; has_video (10), offset_confidence (max 10), metadata_completeness (2/key, max 8), chorus_signal (5, re-scoped from nonexistent "upvotes" to folderIssues/metadataIssues absence) are smaller signals.
 
-- [ ] Task 12: Scoring function + weights — **hard-excludes needs_review/unscanned folders from keeper selection, asserted not just documented** (M)
+- [x] Task 12: Scoring function + weights — **hard-excludes needs_review/unscanned folders from keeper selection, asserted not just documented** (M) — commit b51d486
 
-> **Resolve first**: `_duplicates_review` folder-naming/collision strategy (flat vs. grouped-by-title subfolders).
+> **RESOLVED**: flat structure, `[dupN]` suffix — reuses the same proven pattern as `_needs_review/`.
 
-- [ ] Task 13: Same-volume/cross-volume-aware move to _duplicates_review + destination verification before source removal + manifest logging + resumability + borrow-candidate flagging (M)
-- [ ] Task 14: CLI wiring — dedupe_report.py --dry-run, --library-path (S)
+- [x] Task 13: Same-volume/cross-volume-aware move to _duplicates_review + destination verification before source removal + manifest logging + resumability + borrow-candidate flagging (M) — commit 80c40a6. Resumability is implicit (moved folders don't reappear in future scans), no separate state file needed.
+- [x] Task 14: CLI wiring — dedupe_report.py --dry-run, --library-path (S) — commit 291529e
 
-**Checkpoint 5**: full suite green (all tracks); dry-run produces zero known false positives on a spot-checked sample; confirmed zero needs_review/unscanned folders auto-selected as a keeper; manifest correctly logs every planned move; the real dup2/dup253/dup2-4 groups resolve to a single keeper each.
+**Checkpoint 5 ✅**: 238 tests passing. Verified end-to-end against a disposable real-library subset (the actual Weezer - My Name Is Jonas + [dup2] pair): group_candidates() correctly finds the real candidate group; with neither pyacoustid nor fpcalc installed, the pipeline degrades gracefully exactly as designed — warns clearly, confirms/moves nothing, in both --dry-run and a real run. **Phase 4 (Track C) complete.** Full confirm/score/move behavior against real audio remains unverified pending fpcalc installation (ask-first, not done).
 
 ## Phase 5 — Offset Feature Follow-Up (depends on Track C / Task 14)
 Unblocks `tasks/todo.md`'s long-pending Task 12 — placed here, not at the end, since there's no reason to wait through Phase 6's docs pass for this.
 
-- [ ] Task 15: Confirm the real scope of the duplicate-blocker (how many copies each of Helena/I Write Sins Not Tragedies/Snow (Hey Oh)/My Name Is Jonas has; whether any copy already has a settled offset) — can piggyback on Task 10's census (S)
-- [ ] Task 16: Re-run the offset feature's Task 12 playtest against a deduped/unambiguous song; mark `tasks/todo.md` Task 12 resolved with the result (S)
+- [x] Task 15: Confirm the real scope of the duplicate-blocker (S) — **Helena: 1 copy (never actually blocked); I Write Sins Not Tragedies: 2; Snow (Hey Oh): 2; My Name Is Jonas: 4. None of these 9 real folders has a video_meta.json at all — the offset feature has never run against the real library for any of them, only the small Test staging copies.**
+- [ ] **Task 16 — YOURS TO RUN**: Re-run the offset feature's Task 12 playtest against a deduped/unambiguous song; mark `tasks/todo.md` Task 12 resolved with the result (S)
 
-**Checkpoint 6**: offset feature's Task 12 finally closed out with a real, unambiguous song confirmed synced in-game.
+**Checkpoint 6**: offset feature's Task 12 finally closed out with a real, unambiguous song confirmed synced in-game — requires you to either pick one copy by hand or run `dedupe_report.py` for real (needs `fpcalc` installed first).
 
 ## Phase 6 — Integration
-- [ ] Task 17: README updates across all three features + a cross-feature glossary reconciling the three different attention-needed vocabularies (S)
+- [x] Task 17: README updates across all three features + a cross-feature glossary reconciling the three different attention-needed vocabularies (S) — commit pending
 - [ ] **Task 18: Real-library validation — YOURS TO RUN**
   - Run chart-rename → metadata enrichment → dedupe, in that order, against real (or copied) library
   - Confirm the 3 known chart-rename cases resolve correctly, a sample of enriched song.ini files look right, and at least one dedupe keeper pick looks right before deleting anything
