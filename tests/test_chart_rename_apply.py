@@ -64,6 +64,30 @@ def test_renames_id_suffixed_ini_and_chart_when_content_verified(tmp_path):
 	assert not (tmp_path / "notes_454.chart").exists()
 
 
+def test_dry_run_reports_confirmed_ok_without_touching_any_file(tmp_path):
+	_touch(tmp_path / "song_2400.ini", _ini_text("Kryptonite", "3 Doors Down"))
+	_touch(tmp_path / "notes_454.chart", _chart_text("Kryptonite", "3 Doors Down"))
+
+	result = module.process_chart_folder_names(tmp_path, dry_run=True)
+
+	assert result["status"] == "confirmed_ok"
+	assert (tmp_path / "song_2400.ini").exists()
+	assert (tmp_path / "notes_454.chart").exists()
+	assert not (tmp_path / "song.ini").exists()
+	assert not (tmp_path / "notes.chart").exists()
+
+
+def test_dry_run_reports_needs_review_without_touching_any_file(tmp_path):
+	_touch(tmp_path / "song_819.ini", _ini_text("Mr. Roboto", "Styx"))
+	_touch(tmp_path / "notes_454.chart", _chart_text("Rock & Roll Feeling", "Styx"))
+
+	result = module.process_chart_folder_names(tmp_path, dry_run=True)
+
+	assert result["status"] == "needs_review"
+	assert (tmp_path / "song_819.ini").exists()
+	assert (tmp_path / "notes_454.chart").exists()
+
+
 def test_needs_review_for_real_mr_roboto_content_mismatch(tmp_path):
 	# real shape: song.ini says "Mr. Roboto", chart embeds "Rock & Roll Feeling"
 	_touch(tmp_path / "song_819.ini", _ini_text("Mr. Roboto", "Styx"))
@@ -211,3 +235,85 @@ def test_cross_volume_move_leaves_source_untouched_when_verification_fails(tmp_p
 	# cross-volume copy is not grounds to delete the only good copy
 	assert song_dir.exists()
 	assert (song_dir / "song_819.ini").exists()
+
+
+# --- chart_rename_status persistence + resumability --------------------------
+
+def test_load_chart_rename_status_returns_none_when_not_yet_scanned(tmp_path):
+	assert module.load_chart_rename_status(tmp_path) is None
+
+
+def test_save_and_load_chart_rename_status_round_trips(tmp_path):
+	module.save_chart_rename_status(tmp_path, "confirmed_ok", "already correct")
+
+	assert module.load_chart_rename_status(tmp_path) == "confirmed_ok"
+
+
+def test_save_chart_rename_status_merges_with_existing_video_meta(tmp_path):
+	(tmp_path / "video_meta.json").write_text('{"confidence": 87, "url": "https://example.com"}', encoding="utf-8")
+
+	module.save_chart_rename_status(tmp_path, "needs_review", "content mismatch")
+
+	data = json.loads((tmp_path / "video_meta.json").read_text(encoding="utf-8"))
+	assert data["confidence"] == 87
+	assert data["url"] == "https://example.com"
+	assert data["chart_rename_status"] == "needs_review"
+
+
+# --- process_song_folder_for_chart_rename (full per-folder orchestration) ---
+
+def test_orchestrator_confirmed_ok_when_names_audio_and_album_art_all_pass(tmp_path):
+	home = tmp_path
+	folder = home / "My Chemical Romance - Helena"
+	_touch(folder / "song.ini", _ini_text("Helena", "My Chemical Romance"))
+	_touch(folder / "notes.chart", _chart_text("Helena", "My Chemical Romance"))
+	_touch(folder / "song.ogg")
+	_touch(folder / "album.jpg")
+
+	result = module.process_song_folder_for_chart_rename(folder, home)
+
+	assert result["status"] == "confirmed_ok"
+	assert module.load_chart_rename_status(folder) == "confirmed_ok"
+
+
+def test_orchestrator_relocates_to_needs_review_on_audio_ambiguity(tmp_path):
+	home = tmp_path
+	folder = home / "3 Doors Down - Kryptonite"
+	_touch(folder / "song.ini", _ini_text("Kryptonite", "3 Doors Down", song_length=240389))
+	_touch(folder / "notes.mid")
+	_touch(folder / "guitar_1760.ogg")
+	_touch(folder / "guitar_1846.ogg")  # ambiguous: two guitar candidates
+
+	result = module.process_song_folder_for_chart_rename(folder, home)
+
+	assert result["status"] == "needs_review"
+	assert not folder.exists()
+	assert (home / "_needs_review" / "3 Doors Down - Kryptonite").exists()
+
+
+def test_orchestrator_skips_already_settled_folder_on_rerun(tmp_path):
+	home = tmp_path
+	folder = home / "My Chemical Romance - Helena"
+	_touch(folder / "song.ini", _ini_text("Helena", "My Chemical Romance"))
+	_touch(folder / "notes.chart", _chart_text("Helena", "My Chemical Romance"))
+	module.save_chart_rename_status(folder, "confirmed_ok", "already correct")
+
+	result = module.process_song_folder_for_chart_rename(folder, home)
+
+	assert result["status"] == "skipped_settled"
+
+
+def test_orchestrator_dry_run_relocates_nothing(tmp_path):
+	home = tmp_path
+	folder = home / "3 Doors Down - Kryptonite"
+	_touch(folder / "song.ini", _ini_text("Kryptonite", "3 Doors Down", song_length=240389))
+	_touch(folder / "notes.mid")
+	_touch(folder / "guitar_1760.ogg")
+	_touch(folder / "guitar_1846.ogg")
+
+	result = module.process_song_folder_for_chart_rename(folder, home, dry_run=True)
+
+	assert result["status"] == "needs_review"
+	assert folder.exists()
+	assert not (home / "_needs_review").exists()
+	assert module.load_chart_rename_status(folder) is None

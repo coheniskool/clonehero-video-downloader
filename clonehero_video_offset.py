@@ -391,7 +391,7 @@ def read_song_ini_fields(ini_path, keys):
     return fields
 
 
-def process_chart_folder_names(song_dir):
+def process_chart_folder_names(song_dir, dry_run=False):
     """Verify and rename ID-suffixed song.ini/notes.chart/notes.mid, with a collision guard.
 
     Returns {'status': ..., 'detail': ...}. Statuses: 'confirmed_ok' (already
@@ -399,6 +399,9 @@ def process_chart_folder_names(song_dir):
     'needs_review' (content couldn't be confirmed, a rename target already
     exists, or there's nothing to verify against), 'skipped_sng'
     (is_sng_packaged() -- left completely untouched).
+
+    dry_run=True computes and returns the same status/detail without
+    renaming anything -- the reported outcome describes what WOULD happen.
 
     Does not check audio-stem or album-art naming, and does not relocate
     needs_review folders -- callers combine this with
@@ -441,13 +444,18 @@ def process_chart_folder_names(song_dir):
 
     renamed = []
     if ini_file.name.lower() != 'song.ini':
-        ini_file.rename(target_ini)
+        if not dry_run:
+            ini_file.rename(target_ini)
         renamed.append(f'{ini_file.name} -> song.ini')
     if chart_file.name.lower() != target_chart_name:
-        chart_file.rename(target_chart)
+        if not dry_run:
+            chart_file.rename(target_chart)
         renamed.append(f'{chart_file.name} -> {target_chart_name}')
 
-    return {'status': 'confirmed_ok', 'detail': '; '.join(renamed) if renamed else 'already correct'}
+    detail = '; '.join(renamed) if renamed else 'already correct'
+    if dry_run and renamed:
+        detail += ' (dry-run, not applied)'
+    return {'status': 'confirmed_ok', 'detail': detail}
 
 
 NEEDS_REVIEW_MANIFEST_FILENAME = '_needs_review_manifest.jsonl'
@@ -530,6 +538,92 @@ def move_to_needs_review(song_dir, home_folder, reason):
     shutil.rmtree(str(song_dir))
     _append_needs_review_manifest(home_folder, song_dir, dest, reason, cross_volume, 'ok')
     return dest
+
+
+#Same file CH-VideoScript.py's VIDEO_METADATA_FILENAME points at -- duplicated
+#as a literal (not imported) to avoid a circular import; keep in sync.
+CHART_RENAME_METADATA_FILENAME = 'video_meta.json'
+
+
+def load_chart_rename_status(song_dir):
+    """Return the persisted chart_rename_status, or None if not yet scanned.
+
+    Absence (None) is a distinct third state from 'confirmed_ok'/'needs_review'
+    -- callers (notably SPEC-duplicate-detection.md's keeper-scoring) must
+    treat it identically to 'needs_review', never as "assumed clean".
+    """
+    metadata_path = Path(song_dir) / CHART_RENAME_METADATA_FILENAME
+    if not metadata_path.exists():
+        return None
+    try:
+        with metadata_path.open('r', encoding='utf-8') as handle:
+            data = json.load(handle)
+        return data.get('chart_rename_status')
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def save_chart_rename_status(song_dir, status, detail=''):
+    """Persist chart_rename_status into video_meta.json, merging with existing fields.
+
+    Merges rather than overwrites so this never clobbers video-match/offset
+    fields the offset feature already wrote for the same folder.
+    """
+    metadata_path = Path(song_dir) / CHART_RENAME_METADATA_FILENAME
+    metadata = {}
+    if metadata_path.exists():
+        try:
+            with metadata_path.open('r', encoding='utf-8') as handle:
+                metadata = json.load(handle)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+    metadata['chart_rename_status'] = status
+    metadata['chart_rename_detail'] = detail
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+
+
+def process_song_folder_for_chart_rename(song_dir, home_folder, dry_run=False):
+    """Full per-folder chart-rename pass: names + audio-stems + album-art.
+
+    Returns {'status': ..., 'detail': ...}. Statuses: 'confirmed_ok' (the
+    ini/chart/mid check, audio-stem check, AND album-art check all pass),
+    'needs_review' (any check fails -- the folder is relocated intact to
+    _needs_review/ via move_to_needs_review(), unless dry_run), 'skipped_sng',
+    'skipped_settled' (chart_rename_status was already 'confirmed_ok' on a
+    prior run -- resumability).
+
+    dry_run=True computes the same outcome without renaming, relocating, or
+    persisting anything.
+    """
+    song_dir = Path(song_dir)
+
+    if is_sng_packaged(song_dir):
+        return {'status': 'skipped_sng', 'detail': ''}
+
+    if load_chart_rename_status(song_dir) == 'confirmed_ok':
+        return {'status': 'skipped_settled', 'detail': 'already confirmed_ok'}
+
+    names_result = process_chart_folder_names(song_dir, dry_run=dry_run)
+    audio_result = scan_song_folder_audio_stems(song_dir)
+    album_art_result = scan_song_folder_album_art(song_dir)
+
+    failures = [
+        r['detail'] for r in (names_result, audio_result, album_art_result)
+        if r['status'] not in ('confirmed_ok', 'ok')
+    ]
+
+    if failures:
+        detail = '; '.join(failures)
+        if not dry_run:
+            move_to_needs_review(song_dir, home_folder, detail)
+            #status intentionally not persisted here -- the folder no longer
+            #exists at song_dir once relocated, and the manifest already
+            #records the relocation and its reason
+        return {'status': 'needs_review', 'detail': detail}
+
+    if not dry_run:
+        save_chart_rename_status(song_dir, 'confirmed_ok', names_result['detail'])
+    return {'status': 'confirmed_ok', 'detail': names_result['detail']}
 
 
 def probe_frame_rate(video_path):
