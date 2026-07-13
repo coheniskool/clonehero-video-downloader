@@ -1276,7 +1276,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Compute and log offsets without writing to song.ini, re-encoding any video, or updating video_meta.json. Also applies to --scan-chart-names.",
+        help="Compute and log offsets without writing to song.ini, re-encoding any video, or updating video_meta.json. Also applies to --scan-chart-names/--enrich-metadata.",
     )
     parser.add_argument(
         "--scan-chart-names",
@@ -1284,6 +1284,14 @@ def parse_args() -> argparse.Namespace:
         help="Scan the library for ID-suffixed song.ini/notes.chart/notes.mid/audio-stem/album-art files, "
              "rename ones whose content is confirmed to match their folder, and relocate anything unconfirmed "
              "to _needs_review/. Opt-in, standalone -- runs instead of the normal search/download flow. "
+             "Combine with --dry-run to preview without touching any file.",
+    )
+    parser.add_argument(
+        "--enrich-metadata",
+        action="store_true",
+        help="Look up each song on Chorus Encore by artist+title and fill blank song.ini fields "
+             "(year/genre/charter/album) from a confident match. Never overwrites an existing value. "
+             "Opt-in, standalone -- runs instead of the normal search/download flow. "
              "Combine with --dry-run to preview without touching any file.",
     )
     return parser.parse_args()
@@ -1317,6 +1325,13 @@ def main() -> None:
             print("--scan-chart-names requires the offset-detection dependencies (see the warning above).")
             return
         scan_and_fix_chart_library(homeFolder, dry_run=args.dry_run)
+        return
+
+    if args.enrich_metadata:
+        if not OFFSET_SUPPORT:
+            print("--enrich-metadata requires the offset-detection dependencies (see the warning above).")
+            return
+        enrich_song_ini_metadata_library(homeFolder, dry_run=args.dry_run)
         return
 
     if not args.skip_library_scan:
