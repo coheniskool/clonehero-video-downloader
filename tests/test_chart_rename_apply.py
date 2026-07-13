@@ -6,9 +6,18 @@ decision -- confirmed_ok (already correct, or safely renamed), needs_review
 (content unconfirmed, collision, or nothing to verify against), or
 skipped_sng (Clone Hero's newer single-file container, untouched).
 
-Does not yet cover audio-stems/album-art combination, folder relocation, or
-persistence -- those are separate, later increments layered on top.
+move_to_needs_review() relocates a folder to _needs_review/ at the library
+root, same-volume vs. cross-volume aware, with a JSONL manifest -- a cross-
+volume move must verify the destination is complete before removing the
+source, since an interrupted copy-then-delete is real, permanent data loss
+on an irreplaceable library.
+
+Does not yet cover audio-stems/album-art combination or status persistence
+-- those are separate, later increments layered on top.
 """
+
+import json
+from unittest.mock import patch
 
 import clonehero_video_offset as module
 
@@ -116,3 +125,89 @@ def test_skipped_sng_when_sng_packaged_never_touches_anything(tmp_path):
 
 	assert result["status"] == "skipped_sng"
 	assert (tmp_path / "leftover_819.ini").exists()
+
+
+# --- move_to_needs_review ----------------------------------------------------
+
+def _make_song_folder(home_folder, name="Styx - Mr. Roboto"):
+	folder = home_folder / name
+	_touch(folder / "song_819.ini", "[Song]\nname = Mr. Roboto\n")
+	_touch(folder / "notes_454.chart", _chart_text("Rock & Roll Feeling", "Styx"))
+	return folder
+
+
+def test_same_volume_move_relocates_folder_intact(tmp_path):
+	home = tmp_path / "library"
+	home.mkdir()
+	song_dir = _make_song_folder(home)
+
+	dest = module.move_to_needs_review(song_dir, home, "content mismatch")
+
+	assert not song_dir.exists()
+	assert dest.exists()
+	assert dest.parent == home / "_needs_review"
+	assert (dest / "song_819.ini").exists()
+	assert (dest / "notes_454.chart").exists()
+
+
+def test_same_volume_move_appends_manifest_entry(tmp_path):
+	home = tmp_path / "library"
+	home.mkdir()
+	song_dir = _make_song_folder(home)
+
+	module.move_to_needs_review(song_dir, home, "content mismatch")
+
+	manifest_path = home / module.NEEDS_REVIEW_MANIFEST_FILENAME
+	entries = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
+	assert len(entries) == 1
+	assert entries[0]["reason"] == "content mismatch"
+	assert entries[0]["cross_volume"] is False
+	assert entries[0]["verification"] == "not_applicable"
+
+
+def test_move_handles_destination_name_collision(tmp_path):
+	home = tmp_path / "library"
+	home.mkdir()
+	(home / "_needs_review").mkdir()
+	_touch(home / "_needs_review" / "Styx - Mr. Roboto" / "placeholder.txt")
+	song_dir = _make_song_folder(home)
+
+	dest = module.move_to_needs_review(song_dir, home, "content mismatch")
+
+	assert dest.name == "Styx - Mr. Roboto [dup1]"
+	assert (home / "_needs_review" / "Styx - Mr. Roboto" / "placeholder.txt").exists()
+
+
+def test_cross_volume_move_verifies_before_removing_source(tmp_path):
+	home = tmp_path / "library"
+	home.mkdir()
+	song_dir = _make_song_folder(home)
+
+	with patch.object(module, "_dest_is_same_volume", return_value=False):
+		dest = module.move_to_needs_review(song_dir, home, "content mismatch")
+
+	assert not song_dir.exists()
+	assert (dest / "song_819.ini").exists()
+	manifest_path = home / module.NEEDS_REVIEW_MANIFEST_FILENAME
+	entries = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
+	assert entries[0]["cross_volume"] is True
+	assert entries[0]["verification"] == "ok"
+
+
+def test_cross_volume_move_leaves_source_untouched_when_verification_fails(tmp_path):
+	home = tmp_path / "library"
+	home.mkdir()
+	song_dir = _make_song_folder(home)
+
+	with patch.object(module, "_dest_is_same_volume", return_value=False), \
+	     patch.object(module, "_folder_size_and_count", side_effect=[(999, 999), (0, 0)]):
+		try:
+			module.move_to_needs_review(song_dir, home, "content mismatch")
+			assert False, "expected a RuntimeError on verification failure"
+		except RuntimeError:
+			pass
+
+	# source must still exist, completely untouched -- an interrupted/incomplete
+	# cross-volume copy is not grounds to delete the only good copy
+	assert song_dir.exists()
+	assert (song_dir / "song_819.ini").exists()

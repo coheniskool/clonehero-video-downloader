@@ -7,6 +7,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from difflib import SequenceMatcher
@@ -447,6 +448,88 @@ def process_chart_folder_names(song_dir):
         renamed.append(f'{chart_file.name} -> {target_chart_name}')
 
     return {'status': 'confirmed_ok', 'detail': '; '.join(renamed) if renamed else 'already correct'}
+
+
+NEEDS_REVIEW_MANIFEST_FILENAME = '_needs_review_manifest.jsonl'
+
+
+def _dest_is_same_volume(source, dest_parent):
+    try:
+        return os.stat(source).st_dev == os.stat(dest_parent).st_dev
+    except OSError:
+        return False
+
+
+def _folder_size_and_count(folder):
+    total_size = 0
+    count = 0
+    for p in Path(folder).rglob('*'):
+        if p.is_file():
+            total_size += p.stat().st_size
+            count += 1
+    return total_size, count
+
+
+def _append_needs_review_manifest(home_folder, source, dest, reason, cross_volume, verification):
+    manifest_path = Path(home_folder) / NEEDS_REVIEW_MANIFEST_FILENAME
+    entry = {
+        'source': str(source),
+        'destination': str(dest),
+        'reason': reason,
+        'cross_volume': cross_volume,
+        'verification': verification,
+    }
+    with manifest_path.open('a', encoding='utf-8') as handle:
+        handle.write(json.dumps(entry) + '\n')
+
+
+def move_to_needs_review(song_dir, home_folder, reason):
+    """Relocate song_dir intact into _needs_review/ at home_folder's root.
+
+    Same-volume moves use shutil.move() directly (atomic rename under the
+    hood). Cross-volume moves copy to the destination first, verify total
+    file count and byte size match the source, and only remove the source
+    after that verification passes -- an interrupted cross-volume move must
+    never leave the library in a state where the folder exists nowhere
+    complete. Every move (either case) is appended to a JSONL manifest.
+    Raises RuntimeError (source left untouched) if cross-volume verification
+    fails.
+    """
+    song_dir = Path(song_dir)
+    home_folder = Path(home_folder)
+    review_root = home_folder / '_needs_review'
+    review_root.mkdir(parents=True, exist_ok=True)
+
+    dest = review_root / song_dir.name
+    if dest.exists():
+        suffix = 1
+        while (review_root / f'{song_dir.name} [dup{suffix}]').exists():
+            suffix += 1
+        dest = review_root / f'{song_dir.name} [dup{suffix}]'
+
+    cross_volume = not _dest_is_same_volume(song_dir, review_root)
+
+    if not cross_volume:
+        shutil.move(str(song_dir), str(dest))
+        _append_needs_review_manifest(home_folder, song_dir, dest, reason, cross_volume, 'not_applicable')
+        return dest
+
+    source_size, source_count = _folder_size_and_count(song_dir)
+    shutil.copytree(str(song_dir), str(dest))
+    dest_size, dest_count = _folder_size_and_count(dest)
+
+    if dest_size != source_size or dest_count != source_count:
+        _append_needs_review_manifest(home_folder, song_dir, dest, reason, cross_volume, 'failed')
+        raise RuntimeError(
+            f'cross-volume copy verification failed for {song_dir.name}: '
+            f'source had {source_count} files/{source_size} bytes, '
+            f'destination has {dest_count} files/{dest_size} bytes -- source left untouched, '
+            f'incomplete copy left at {dest}'
+        )
+
+    shutil.rmtree(str(song_dir))
+    _append_needs_review_manifest(home_folder, song_dir, dest, reason, cross_volume, 'ok')
+    return dest
 
 
 def probe_frame_rate(video_path):
