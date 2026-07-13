@@ -83,7 +83,12 @@ def scan_song_folder_chart_names(song_dir):
     'ok' (song.ini and a notes.chart/.mid are both present with literal
     names), 'id_suffixed' (the .ini and/or chart file is numeric-ID-suffixed
     -- detail lists which), 'no_ini' (no *.ini file at all), 'no_chart_file'
-    (a literal or ID-suffixed .ini exists but no notes.chart/.mid does).
+    (a literal or ID-suffixed .ini exists but no notes.chart/.mid does),
+    'ambiguous' (more than one .ini, or more than one chart/.mid candidate,
+    exists in the same folder -- e.g. a leftover suffixed file alongside an
+    already-correct literal one. Never silently pick one and ignore the
+    other; that's exactly the collision case Task 4's rename guard must
+    catch, not something detection should hide).
 
     This is detection only -- verifying that an ID-suffixed file's content
     actually matches the folder's stated song (Tasks 2/3), and the rename/
@@ -92,14 +97,17 @@ def scan_song_folder_chart_names(song_dir):
     ini_files = sorted(song_dir.glob('*.ini'))
     if not ini_files:
         return {'status': 'no_ini', 'detail': ''}
+    if len(ini_files) > 1:
+        return {'status': 'ambiguous', 'detail': ', '.join(p.name for p in ini_files)}
+    ini_file = ini_files[0]
 
-    ini_file = next((p for p in ini_files if p.name.lower() == 'song.ini'), ini_files[0])
-
-    chart_files = sorted(song_dir.glob('notes.chart')) + sorted(song_dir.glob('notes.mid'))
-    chart_file = next((p for p in chart_files if p.name.lower() in ('notes.chart', 'notes.mid')), None)
-    if chart_file is None:
-        chart_candidates = sorted(song_dir.glob('notes_*.chart')) + sorted(song_dir.glob('notes_*.mid'))
-        chart_file = chart_candidates[0] if chart_candidates else None
+    chart_candidates = (
+        sorted(song_dir.glob('notes.chart')) + sorted(song_dir.glob('notes_*.chart'))
+        + sorted(song_dir.glob('notes.mid')) + sorted(song_dir.glob('notes_*.mid'))
+    )
+    if len(chart_candidates) > 1:
+        return {'status': 'ambiguous', 'detail': ', '.join(p.name for p in chart_candidates)}
+    chart_file = chart_candidates[0] if chart_candidates else None
 
     if chart_file is None:
         return {'status': 'no_chart_file', 'detail': ini_file.name}
@@ -361,6 +369,84 @@ def is_sng_packaged(song_dir):
     there's nothing loose to verify or rename.
     """
     return any(song_dir.glob('*.sng'))
+
+
+def read_song_ini_fields(ini_path, keys):
+    """Read specific top-level fields from a song.ini file, read-only.
+
+    Regex-based (not configparser), consistent with this project's existing
+    ini-handling philosophy -- but this is read-only, so no formatting-
+    preservation concerns apply the way they do for patch_song_ini().
+    """
+    try:
+        text = ini_path.read_text(encoding='utf-8', errors='ignore')
+    except OSError:
+        return {}
+    fields = {}
+    for key in keys:
+        match = re.search(rf'(?im)^[ \t]*{re.escape(key)}[ \t]*=[ \t]*(.*?)[ \t]*$', text)
+        if match:
+            fields[key.lower()] = match.group(1)
+    return fields
+
+
+def process_chart_folder_names(song_dir):
+    """Verify and rename ID-suffixed song.ini/notes.chart/notes.mid, with a collision guard.
+
+    Returns {'status': ..., 'detail': ...}. Statuses: 'confirmed_ok' (already
+    literally named, or safely renamed after content verification passed),
+    'needs_review' (content couldn't be confirmed, a rename target already
+    exists, or there's nothing to verify against), 'skipped_sng'
+    (is_sng_packaged() -- left completely untouched).
+
+    Does not check audio-stem or album-art naming, and does not relocate
+    needs_review folders -- callers combine this with
+    scan_song_folder_audio_stems()/scan_song_folder_album_art() and
+    move_to_needs_review() to decide and act on the folder's overall outcome.
+    """
+    if is_sng_packaged(song_dir):
+        return {'status': 'skipped_sng', 'detail': ''}
+
+    detection = scan_song_folder_chart_names(song_dir)
+    if detection['status'] == 'ok':
+        return {'status': 'confirmed_ok', 'detail': detection['detail']}
+    if detection['status'] in ('no_ini', 'no_chart_file', 'ambiguous'):
+        return {'status': 'needs_review', 'detail': f"{detection['status']}: {detection['detail']}"}
+
+    # detection['status'] == 'id_suffixed' -- verify content before touching anything
+    ini_files = sorted(song_dir.glob('*.ini'))
+    ini_file = next((p for p in ini_files if p.name.lower() == 'song.ini'), ini_files[0])
+    ini_fields = read_song_ini_fields(ini_file, ('name', 'artist', 'song_length'))
+
+    matched, reason = verify_chart_content_match(song_dir, ini_fields)
+    if not matched:
+        return {'status': 'needs_review', 'detail': reason}
+
+    chart_files = sorted(song_dir.glob('*.chart'))
+    mid_files = sorted(song_dir.glob('*.mid'))
+    chart_file = chart_files[0] if chart_files else (mid_files[0] if mid_files else None)
+    if chart_file is None:
+        return {'status': 'needs_review', 'detail': 'no .chart or .mid file found to rename'}
+    target_chart_name = 'notes.chart' if chart_file.suffix.lower() == '.chart' else 'notes.mid'
+    target_chart = song_dir / target_chart_name
+
+    #collision guard: never overwrite a file that already exists at the target
+    #name -- can happen if a prior partial run or manual edit left both present
+    target_ini = song_dir / 'song.ini'
+    if ini_file.name.lower() != 'song.ini' and target_ini.exists():
+        return {'status': 'needs_review', 'detail': f'{ini_file.name}: song.ini already exists'}
+    if chart_file.name.lower() != target_chart_name and target_chart.exists():
+        return {'status': 'needs_review', 'detail': f'{chart_file.name}: {target_chart_name} already exists'}
+
+    renamed = []
+    if ini_file.name.lower() != 'song.ini':
+        ini_file.rename(target_ini)
+        renamed.append(f'{ini_file.name} -> song.ini')
+    if chart_file.name.lower() != target_chart_name:
+        chart_file.rename(target_chart)
+        renamed.append(f'{chart_file.name} -> {target_chart_name}')
+
+    return {'status': 'confirmed_ok', 'detail': '; '.join(renamed) if renamed else 'already correct'}
 
 
 def probe_frame_rate(video_path):

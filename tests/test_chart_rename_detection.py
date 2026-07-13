@@ -105,3 +105,25 @@ def test_case_insensitive_literal_names_are_ok(tmp_path):
 	result = module.scan_song_folder_chart_names(tmp_path)
 
 	assert result["status"] == "ok"
+
+
+def test_ambiguous_when_leftover_suffixed_ini_coexists_with_literal(tmp_path):
+	# a leftover from a partial prior run/manual edit -- must not silently pick
+	# the literal name and ignore the suffixed one still sitting there
+	_touch(tmp_path / "song.ini")
+	_touch(tmp_path / "song_2400.ini")
+	_touch(tmp_path / "notes.chart")
+
+	result = module.scan_song_folder_chart_names(tmp_path)
+
+	assert result["status"] == "ambiguous"
+
+
+def test_ambiguous_when_leftover_suffixed_chart_coexists_with_literal(tmp_path):
+	_touch(tmp_path / "song.ini")
+	_touch(tmp_path / "notes.chart")
+	_touch(tmp_path / "notes_454.chart")
+
+	result = module.scan_song_folder_chart_names(tmp_path)
+
+	assert result["status"] == "ambiguous"
