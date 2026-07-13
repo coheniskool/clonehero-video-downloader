@@ -317,3 +317,33 @@ def test_orchestrator_dry_run_relocates_nothing(tmp_path):
 	assert folder.exists()
 	assert not (home / "_needs_review").exists()
 	assert module.load_chart_rename_status(folder) is None
+
+
+# --- scan_and_fix_chart_library (aggregate pass, log-message correctness) ---
+
+def test_library_scan_does_not_log_already_literal_folder_as_renamed(tmp_path, capsys):
+	# real bug caught during manual --dry-run verification: an already-correct
+	# folder's process_chart_folder_names() detail is "song.ini, notes.mid" (no
+	# arrow), which must NOT be logged as "Renamed: ..." -- nothing was renamed
+	folder = tmp_path / "My Chemical Romance - Helena"
+	_touch(folder / "song.ini", _ini_text("Helena", "My Chemical Romance"))
+	_touch(folder / "notes.mid")
+	_touch(folder / "song.ogg")
+
+	module.scan_and_fix_chart_library(tmp_path, dry_run=True)
+
+	output = capsys.readouterr().out
+	assert "Renamed" not in output
+
+
+def test_library_scan_logs_an_actual_rename(tmp_path, capsys):
+	folder = tmp_path / "3 Doors Down - Kryptonite"
+	_touch(folder / "song_2400.ini", _ini_text("Kryptonite", "3 Doors Down"))
+	_touch(folder / "notes_454.chart", _chart_text("Kryptonite", "3 Doors Down"))
+	_touch(folder / "song.ogg")
+
+	module.scan_and_fix_chart_library(tmp_path, dry_run=False)
+
+	output = capsys.readouterr().out
+	assert "Renamed: 3 Doors Down - Kryptonite" in output
+	assert "song_2400.ini -> song.ini" in output

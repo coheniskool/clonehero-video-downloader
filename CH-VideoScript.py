@@ -90,7 +90,7 @@ CANONICAL_VIDEO_NAMES = {"video.mp4", "video.avi", "video.webm", "video.ogv"}
 _YTDLP_FRAGMENT_RE = re.compile(r"\.f\d+\.|\.part$|\.ytdl$|\.temp\.", re.IGNORECASE)
 
 try:
-    from clonehero_video_offset import extract_audio, compute_offset, find_song_audio, find_video_file, probe_frame_rate, probe_video_codec, reencode_to_cfr
+    from clonehero_video_offset import extract_audio, compute_offset, find_song_audio, find_video_file, probe_frame_rate, probe_video_codec, reencode_to_cfr, scan_and_fix_chart_library
     OFFSET_SUPPORT = True
 except ImportError as exc:
     OFFSET_SUPPORT = False
@@ -1061,7 +1061,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Compute and log offsets without writing to song.ini, re-encoding any video, or updating video_meta.json.",
+        help="Compute and log offsets without writing to song.ini, re-encoding any video, or updating video_meta.json. Also applies to --scan-chart-names.",
+    )
+    parser.add_argument(
+        "--scan-chart-names",
+        action="store_true",
+        help="Scan the library for ID-suffixed song.ini/notes.chart/notes.mid/audio-stem/album-art files, "
+             "rename ones whose content is confirmed to match their folder, and relocate anything unconfirmed "
+             "to _needs_review/. Opt-in, standalone -- runs instead of the normal search/download flow. "
+             "Combine with --dry-run to preview without touching any file.",
     )
     return parser.parse_args()
 
@@ -1088,6 +1096,13 @@ def main() -> None:
     os.chdir(homeFolder)
     print(os.getcwd())
     print()
+
+    if args.scan_chart_names:
+        if not OFFSET_SUPPORT:
+            print("--scan-chart-names requires the offset-detection dependencies (see the warning above).")
+            return
+        scan_and_fix_chart_library(homeFolder, dry_run=args.dry_run)
+        return
 
     if not args.skip_library_scan:
         scan_and_fix_video_library(homeFolder)

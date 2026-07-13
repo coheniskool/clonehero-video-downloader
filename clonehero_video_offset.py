@@ -626,6 +626,53 @@ def process_song_folder_for_chart_rename(song_dir, home_folder, dry_run=False):
     return {'status': 'confirmed_ok', 'detail': names_result['detail']}
 
 
+def scan_and_fix_chart_library(home_folder, dry_run=False):
+    """Scan every song folder under home_folder and fix ID-suffixed chart naming.
+
+    Mirrors scan_and_fix_video_library()'s aggregate/summary style. Opt-in,
+    not run automatically at startup like the video scan -- this feature
+    relocates whole folders out of the library (more invasive than the video
+    scan's in-place renames) and is newly built, so it defaults to explicit.
+    """
+    print('=' * 70)
+    print('SCANNING CHART FILE NAMING' + (' (DRY RUN)' if dry_run else ''))
+    print('=' * 70)
+
+    counts = {}
+    needs_review = []
+
+    for folder in sorted(Path(home_folder).iterdir()):
+        if not folder.is_dir() or folder.name == '_needs_review':
+            continue
+
+        result = process_song_folder_for_chart_rename(folder, home_folder, dry_run=dry_run)
+        counts[result['status']] = counts.get(result['status'], 0) + 1
+
+        if result['status'] == 'needs_review':
+            needs_review.append((folder.name, result['detail']))
+            print(f"  NEEDS REVIEW: {folder.name}: {result['detail']}")
+        elif result['status'] == 'confirmed_ok' and ' -> ' in result['detail']:
+            #' -> ' only appears in process_chart_folder_names()'s detail when an
+            #actual rename happened -- an already-literal folder's detail is just
+            #"song.ini, notes.mid" (the filenames, no arrow) and shouldn't be logged
+            #as if something was renamed
+            print(f"  Renamed: {folder.name}: {result['detail']}")
+
+    print()
+    print(
+        f"Scan complete: {counts.get('confirmed_ok', 0)} confirmed ok, "
+        f"{counts.get('needs_review', 0)} need review, "
+        f"{counts.get('skipped_settled', 0)} already settled, "
+        f"{counts.get('skipped_sng', 0)} .sng-packaged (skipped)."
+    )
+    if needs_review:
+        print(f"{len(needs_review)} folder(s) need manual review:")
+        for name, reason in needs_review:
+            print(f"  - {name}: {reason}")
+    print('=' * 70)
+    print()
+
+
 def probe_frame_rate(video_path):
     #Variable Frame Rate (VFR) source video causes progressive, cumulative audio/video
     #desync that a single static video_start_time offset cannot fix -- it only corrects
