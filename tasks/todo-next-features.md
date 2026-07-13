@@ -39,22 +39,22 @@ Every open question below is meant to be resolved **before** the task immediatel
 **Checkpoint 2 ✅**: 159 tests passing, no regressions. Verified end-to-end against a disposable copy of the real Test library: dry-run correctly flags Kryptonite's audio/album-art ambiguity and touches zero files (diff-confirmed); a real run relocates it intact to `_needs_review/` with a correct manifest entry; a second run is a no-op (resumability confirmed). **Phase 1 (Track A: Chart Rename) is complete.**
 
 ## Phase 2 — Shared Foundation
-- [ ] Task 6: chorus_client.py — search_by_artist_title(), built from Bridge's schema, shared by Tracks B & C (M)
+- [x] Task 6: chorus_client.py — search_by_artist_title(), built from Bridge's schema, shared by Tracks B & C (M) — commit 564ef5d, verified with a real live call against api.enchor.us
 
-**Checkpoint 3**: chorus_client unit tests green; real API call confirmed working against the Bridge-sourced schema.
+**Checkpoint 3 ✅**: chorus_client unit tests green (7/7); real API call confirmed working against the Bridge-sourced schema, response matches exactly. **Phase 2 complete.**
 
 ## Phase 3 — Track B: Chorus Metadata Enrichment (depends on Task 6)
-- [ ] Task 7: sanitize_chorus_field() + multi-key blank-only song.ini patch function (M)
+- [x] Task 7: sanitize_chorus_field() + multi-key blank-only song.ini patch function (M) — commit 268063e
 
-> **Resolve first**: exact field list to fill (year/genre/charter/album, or wider?) and the match-confidence threshold for applying a Chorus result.
+> **RESOLVED**: field list stays year/genre/charter/album (all confirmed real fields). Confidence threshold: 70 (SequenceMatcher on name+artist, weaker of the two scores).
 
-- [ ] Task 8: fill_song_ini_metadata() + enrich_song_ini_metadata_library() (per-item log + aggregate summary) + confidence threshold (M)
-- [ ] Task 9: CLI wiring — --enrich-metadata, --dry-run (S)
+- [x] Task 8: fill_song_ini_metadata() + enrich_song_ini_metadata_library() (per-item log + aggregate summary) + confidence threshold (M) — commit 0364ae1
+- [x] Task 9: CLI wiring — --enrich-metadata, --dry-run (S) — commit 20f9ab0
 
-**Checkpoint 4**: pytest green; dry-run shows plausible fills; zero existing fields altered; per-song log + aggregate summary confirmed present.
+**Checkpoint 4 ✅**: 198 tests passing. Verified end-to-end against the LIVE Chorus Encore API (not just mocked): dry-run against the real Test library correctly reports "no change" (already fully populated); a synthetic copy with genre/charter blanked gets them filled with real data; year/album (never blanked) confirmed untouched. **Phase 3 (Track B) complete.**
 
 ## Phase 4 — Track C: Duplicate Detection (depends on Task 6; Task 12 HARD-depends on Task 4)
-- [ ] Task 10: Duplicate-count estimate — fuzzy-match-only pass, no fingerprinting; should surface the already-confirmed real dup2/dup253/dup2-4 cases (S)
+- [x] Task 10: Duplicate-count estimate (S) — **336 candidate groups, 844 folders (~16.5% of library)**; found + fixed a real undercount bug (bracket-suffix noise like `[dup253]` wasn't being stripped before normalizing); all 3 known real cases confirmed caught
 - [ ] Task 11: Fuzzy candidate grouping, incl. Live/Acoustic/Remix negative case (M)
 - [ ] Task 11b: fpcalc/pyacoustid (official release only) + confirm_group() fingerprinting; evaluate Chorus hash fields as an alternative (M)
 

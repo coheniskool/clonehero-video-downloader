@@ -204,10 +204,10 @@ Every open question flagged below is meant to be resolved (a real decision made 
 
 ## Phase 4 — Track C: Duplicate Detection
 
-- [ ] **Task 10**: Duplicate-count estimate — fuzzy-match-only pass, no fingerprinting (S)
-  - Acceptance: a rough count of candidate duplicate groups in the real library, sizing the rest of this track's scope before the full fingerprinting/scoring pipeline is built. Should surface (at minimum) the already-confirmed real cases: `Panic! At The Disco - I Write Sins Not Tragedies [dup2]`, `Red Hot Chili Peppers - Snow (Hey Oh) [dup253]`, `Weezer - My Name Is Jonas [dup2/dup3/dup4]`.
-  - Verify: manual run, count recorded in task notes
-  - Files: none (throwaway script or reuse of Task 11's grouping code once written)
+- [x] **Task 10**: Duplicate-count estimate — fuzzy-match-only pass, no fingerprinting (S)
+  - **Done 2026-07-14.** First pass (exact-normalized-key grouping via existing `parse_folder_name`/`normalize_lookup_value`) found only 27 groups/54 folders -- undercounted because it missed the known real `[dup2]`/`[dup253]` cases entirely (the existing `strip_title_noise` regexes don't strip bracket-suffix noise like `[dup253]`, only trailing parenthetical noise). Added a `[dupN]`/trailing-bracket strip before normalizing and re-ran: **336 candidate duplicate groups, 844 folders total (~16.5% of the 5,130-song library)** -- distribution: 226 groups of 2, 66 of 3, 29 of 4, 13 of 5, 1 of 6, 1 of 7. All three previously-confirmed real cases (`I Write Sins Not Tragedies`, `Snow (Hey Oh)`, `My Name Is Jonas`) correctly appear. This is common enough to matter, not a rare edge case -- confirms the feature's real value, and confirms Task 11's real fuzzy-matching grouper needs to handle bracket-noise suffixes as a known real pattern, not just typos/case differences.
+  - Verify: manual run, count recorded above
+  - Files: none (throwaway script; reused in Task 11's real grouping implementation)
 
 - [ ] **Task 11**: Fuzzy candidate grouping (M)
   - Acceptance: reuses `SequenceMatcher`/`normalize_lookup_value` matching already in `CH-VideoScript.py`; the negative case (same title, "Live"/"Acoustic"/"Remix" tag) is never auto-grouped by fuzzy match alone.
