@@ -5,3 +5,4 @@ google
 audio-offset-finder
 numpy>=2,<=2.4
 requests
+pyacoustid

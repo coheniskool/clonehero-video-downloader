@@ -11,9 +11,12 @@
 # be worth this feature's scope, not a rare edge case.
 
 import importlib.util
+import logging
 import re
 from difflib import SequenceMatcher
 from pathlib import Path
+
+from clonehero_video_offset import find_song_audio
 
 _REPO_ROOT = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location('ch_video_script_for_dedupe', _REPO_ROOT / 'CH-VideoScript.py')
@@ -21,6 +24,19 @@ _ch_video_script = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_ch_video_script)
 parse_folder_name = _ch_video_script.parse_folder_name
 normalize_lookup_value = _ch_video_script.normalize_lookup_value
+
+#pyacoustid wraps fpcalc for generation AND provides compare_fingerprints()
+#for proper Chromaprint decode + Hamming-distance bit-pattern comparison --
+#not something worth hand-rolling. Neither pyacoustid nor the fpcalc binary
+#are installed in this dev environment; guarded the same way OFFSET_SUPPORT
+#guards audio_offset_finder, so this module stays importable/testable
+#(mocked) regardless.
+try:
+    import acoustid
+except ImportError as exc:
+    acoustid = None
+    print(f"Audio fingerprinting disabled (missing dependency: {exc}).")
+    print("Run 'pip install pyacoustid' and ensure fpcalc (official AcoustID/Chromaprint release) is on PATH to enable it.")
 
 
 #Real library pattern (confirmed 2026-07-14 census): a duplicate copy is
@@ -102,3 +118,57 @@ def group_candidates(song_folders):
             groups.append(group)
 
     return groups
+
+
+#compare_fingerprints() returns a [0,1] similarity score; 0.95 requires a
+#near-exact match (same recording, allowing for minor encode differences)
+#without being so strict that ordinary lossy-encoding variance between two
+#copies of the identical source audio would fail to match.
+FINGERPRINT_MATCH_THRESHOLD = 0.95
+
+
+def confirm_group(candidate_group):
+    """Narrow a fuzzy-matched candidate group to fingerprint-confirmed duplicates.
+
+    Fingerprints each folder's reference audio (find_song_audio) via
+    pyacoustid/fpcalc and keeps only folders whose fingerprint actually
+    matches the group's first successfully-fingerprinted folder. This is
+    what catches cases fuzzy title matching alone can't: two folders with
+    the same (or near-identical) title/artist that are nonetheless
+    different underlying recordings.
+
+    Returns a list of confirmed folders, or [] if fewer than two folders in
+    the group are confirmed to match each other (nothing to dedupe), if
+    fingerprinting is unavailable, or if any fingerprint call fails --
+    never raises.
+    """
+    if acoustid is None:
+        return []
+
+    fingerprints = []
+    for folder in candidate_group:
+        audio_path = find_song_audio(folder)
+        if audio_path is None:
+            continue
+        try:
+            _duration, fingerprint = acoustid.fingerprint_file(str(audio_path))
+        except Exception as e:
+            logging.error(f"Fingerprint error {folder}: {e}")
+            continue
+        fingerprints.append((folder, fingerprint))
+
+    if len(fingerprints) < 2:
+        return []
+
+    reference_folder, reference_fp = fingerprints[0]
+    confirmed = [reference_folder]
+    for folder, fp in fingerprints[1:]:
+        try:
+            similarity = acoustid.compare_fingerprints(reference_fp, fp)
+        except Exception as e:
+            logging.error(f"Fingerprint comparison error {folder}: {e}")
+            continue
+        if similarity >= FINGERPRINT_MATCH_THRESHOLD:
+            confirmed.append(folder)
+
+    return confirmed if len(confirmed) > 1 else []
