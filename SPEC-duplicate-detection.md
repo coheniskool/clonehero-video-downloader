@@ -98,6 +98,19 @@ README.md                   -> To be updated to document dedupe_report.py, its f
 Match the existing project exactly:
 
 ```python
+#RESOLVED (2026-07-14, before Task 12): concrete weights, informed by the real
+#duplicate-count census (336 groups/844 folders) and the confirmed real schema.
+#Weighted heavily toward instrument/chart completeness -- the actual playable
+#content of a chart -- with video/offset/metadata/Chorus as smaller
+#supplementary signals. Max possible score ~98 (65 from instruments alone).
+DIFF_KEYS = (  # the 13 real diff_* fields from the confirmed Chorus schema
+	"diff_band", "diff_guitar", "diff_guitar_coop", "diff_rhythm", "diff_bass",
+	"diff_drums", "diff_drums_real", "diff_keys", "diff_guitarghl",
+	"diff_guitar_coop_ghl", "diff_rhythm_ghl", "diff_bassghl", "diff_vocals",
+)
+METADATA_KEYS = ("year", "genre", "charter", "album")
+
+
 def score_folder(song_dir, video_meta, song_ini_fields, chorus_data):
 	#returns (score, breakdown) -- breakdown is a dict of {signal_name: points} so the
 	#report can show why a folder won, not just the final number
@@ -106,12 +119,17 @@ def score_folder(song_dir, video_meta, song_ini_fields, chorus_data):
 	breakdown["offset_confidence"] = min(video_meta.get("offset_confidence", 0), 10)
 	breakdown["instrument_count"] = sum(
 		1 for key in DIFF_KEYS if song_ini_fields.get(key, -1) != -1
-	) * 5
-	#no rating/upvote field exists in the real Chorus response (confirmed by
-	#reading Bridge's actual ChartData type) -- chorus_data's contribution here
-	#is a placeholder pending Task 12's re-scoping (folderIssues/metadataIssues
-	#count, or dropping this category entirely); NOT "upvotes", which doesn't exist
-	breakdown["chorus_signal"] = 0
+	) * 5  # dominant signal: max 65 -- an objectively more complete chart should usually win
+	breakdown["metadata_completeness"] = sum(
+		1 for key in METADATA_KEYS if song_ini_fields.get(key)
+	) * 2  # small bonus: max 8
+	#re-scoped from the original (nonexistent) "upvotes" idea: a small bonus
+	#when Chorus's own record of this chart has no known issues. NOT a
+	#primary signal -- folderIssues/metadataIssues presence is a quality
+	#flag, not a popularity/rating measure, since no such field exists
+	breakdown["chorus_signal"] = (
+		5 if chorus_data and not chorus_data.get("folderIssues") and not chorus_data.get("metadataIssues") else 0
+	)
 	return sum(breakdown.values()), breakdown
 
 

@@ -55,7 +55,7 @@ Every open question below is meant to be resolved **before** the task immediatel
 
 ## Phase 4 — Track C: Duplicate Detection (depends on Task 6; Task 12 HARD-depends on Task 4)
 - [x] Task 10: Duplicate-count estimate (S) — **336 candidate groups, 844 folders (~16.5% of library)**; found + fixed a real undercount bug (bracket-suffix noise like `[dup253]` wasn't being stripped before normalizing); all 3 known real cases confirmed caught
-- [ ] Task 11: Fuzzy candidate grouping, incl. Live/Acoustic/Remix negative case (M)
+- [x] Task 11: Fuzzy candidate grouping, incl. Live/Acoustic/Remix negative case (M) — commit b5491f0. Caught a real bug: parse_folder_name() silently strips "(Live)"/"(Acoustic)"/"(Remix)" as noise before the version-tag check could see it — fixed by reading the tag from the raw name first.
 - [ ] Task 11b: fpcalc/pyacoustid (official release only) + confirm_group() fingerprinting; evaluate Chorus hash fields as an alternative (M)
 
 > **Resolve first**: exact scoring weights/formula, informed by Task 10's real count and the real dup2/dup253/dup2-4 examples.

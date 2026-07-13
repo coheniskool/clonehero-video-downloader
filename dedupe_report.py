@@ -172,3 +172,68 @@ def confirm_group(candidate_group):
             confirmed.append(folder)
 
     return confirmed if len(confirmed) > 1 else []
+
+
+#The 13 real diff_* fields confirmed from the Chorus schema (Task 0) --
+#Clone Hero's own song.ini uses the same key names for its per-instrument
+#difficulty ratings, -1 meaning "not charted".
+DIFF_KEYS = (
+    'diff_band', 'diff_guitar', 'diff_guitar_coop', 'diff_rhythm', 'diff_bass',
+    'diff_drums', 'diff_drums_real', 'diff_keys', 'diff_guitarghl',
+    'diff_guitar_coop_ghl', 'diff_rhythm_ghl', 'diff_bassghl', 'diff_vocals',
+)
+METADATA_KEYS = ('year', 'genre', 'charter', 'album')
+
+
+def score_folder(song_dir, video_meta, song_ini_fields, chorus_data):
+    """Score a folder's quality/completeness signals for keeper selection.
+
+    Returns (score, breakdown) -- breakdown is a dict of {signal_name:
+    points} so the report can show *why* a folder won, not just the final
+    number. Weighted heavily toward instrument/chart completeness (the
+    actual playable content) over video/offset/metadata/Chorus, which are
+    smaller supplementary signals. See SPEC-duplicate-detection.md's Code
+    Style section for the full rationale behind these specific weights.
+    """
+    breakdown = {}
+    breakdown['has_video'] = 10 if video_meta.get('video_status') == 'present' else 0
+    breakdown['offset_confidence'] = min(video_meta.get('offset_confidence', 0), 10)
+    breakdown['instrument_count'] = sum(
+        1 for key in DIFF_KEYS if song_ini_fields.get(key, -1) != -1
+    ) * 5
+    breakdown['metadata_completeness'] = sum(
+        1 for key in METADATA_KEYS if song_ini_fields.get(key)
+    ) * 2
+    #re-scoped from the original (nonexistent) "upvotes" idea (Task 0): a
+    #small bonus when Chorus's own record has no known issues -- a quality
+    #flag, not a popularity/rating measure, since no rating field exists
+    breakdown['chorus_signal'] = (
+        5 if chorus_data and not chorus_data.get('folderIssues') and not chorus_data.get('metadataIssues') else 0
+    )
+    return sum(breakdown.values()), breakdown
+
+
+def is_keeper_eligible(video_meta):
+    """True only if chart_rename_status is exactly 'confirmed_ok'.
+
+    Absence (not yet scanned by SPEC-chart-rename.md) is treated identically
+    to 'needs_review' -- an unscanned folder's actual chart/audio content is
+    just as unconfirmed as a flagged one, and picking either as a keeper
+    would permanently promote a potentially wrong chart under the right
+    folder name.
+    """
+    return video_meta.get('chart_rename_status') == 'confirmed_ok'
+
+
+def select_keeper(group, scores, eligibility):
+    """Pick the highest-scoring keeper-eligible folder in a group.
+
+    Hard precondition, not just documented intent: never returns a folder
+    that isn't keeper-eligible, even if it scored highest. Returns None if
+    no folder in the group is eligible -- the caller must skip the whole
+    group and flag it for manual attention rather than auto-resolving it.
+    """
+    eligible = [folder for folder in group if eligibility.get(folder)]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda folder: scores[folder])
