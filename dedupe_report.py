@@ -11,8 +11,10 @@
 # be worth this feature's scope, not a rare edge case.
 
 import importlib.util
+import json
 import logging
 import re
+import shutil
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -237,3 +239,117 @@ def select_keeper(group, scores, eligibility):
     if not eligible:
         return None
     return max(eligible, key=lambda folder: scores[folder])
+
+
+DUPLICATES_REVIEW_MANIFEST_FILENAME = '_duplicates_review_manifest.jsonl'
+
+
+def _dest_is_same_volume(source, dest_parent):
+    import os
+    try:
+        return os.stat(source).st_dev == os.stat(dest_parent).st_dev
+    except OSError:
+        return False
+
+
+def _folder_size_and_count(folder):
+    total_size = 0
+    count = 0
+    for p in Path(folder).rglob('*'):
+        if p.is_file():
+            total_size += p.stat().st_size
+            count += 1
+    return total_size, count
+
+
+def _append_duplicates_review_manifest(home_folder, source, dest, reason, score, cross_volume, verification):
+    manifest_path = Path(home_folder) / DUPLICATES_REVIEW_MANIFEST_FILENAME
+    entry = {
+        'source': str(source),
+        'destination': str(dest),
+        'score': score,
+        'reason': reason,
+        'cross_volume': cross_volume,
+        'verification': verification,
+    }
+    with manifest_path.open('a', encoding='utf-8') as handle:
+        handle.write(json.dumps(entry) + '\n')
+
+
+def move_to_duplicates_review(song_dir, home_folder, reason, score, dry_run=False):
+    """Relocate a losing duplicate folder intact into _duplicates_review/.
+
+    Mirrors clonehero_video_offset.py's move_to_needs_review() exactly (same
+    same-volume/cross-volume-aware logic, same "[dupN]" collision-naming
+    scheme) for cross-feature consistency -- this is a proven mechanism, not
+    a new design. The one difference: the manifest entry here includes the
+    folder's score, since that's meaningful context a chart-rename
+    relocation doesn't have.
+
+    Resumability is implicit: once a folder is moved out of the library
+    root, it simply won't appear in the next run's folder scan, so
+    group_candidates() naturally stops finding it as a duplicate -- no
+    separate state file is needed.
+
+    dry_run=True computes and returns None without moving, relocating, or
+    logging anything.
+    """
+    if dry_run:
+        return None
+
+    song_dir = Path(song_dir)
+    home_folder = Path(home_folder)
+    review_root = home_folder / '_duplicates_review'
+    review_root.mkdir(parents=True, exist_ok=True)
+
+    dest = review_root / song_dir.name
+    if dest.exists():
+        suffix = 1
+        while (review_root / f'{song_dir.name} [dup{suffix}]').exists():
+            suffix += 1
+        dest = review_root / f'{song_dir.name} [dup{suffix}]'
+
+    cross_volume = not _dest_is_same_volume(song_dir, review_root)
+
+    if not cross_volume:
+        shutil.move(str(song_dir), str(dest))
+        _append_duplicates_review_manifest(home_folder, song_dir, dest, reason, score, cross_volume, 'not_applicable')
+        return dest
+
+    source_size, source_count = _folder_size_and_count(song_dir)
+    shutil.copytree(str(song_dir), str(dest))
+    dest_size, dest_count = _folder_size_and_count(dest)
+
+    if dest_size != source_size or dest_count != source_count:
+        _append_duplicates_review_manifest(home_folder, song_dir, dest, reason, score, cross_volume, 'failed')
+        raise RuntimeError(
+            f'cross-volume copy verification failed for {song_dir.name}: '
+            f'source had {source_count} files/{source_size} bytes, '
+            f'destination has {dest_count} files/{dest_size} bytes -- source left untouched, '
+            f'incomplete copy left at {dest}'
+        )
+
+    shutil.rmtree(str(song_dir))
+    _append_duplicates_review_manifest(home_folder, song_dir, dest, reason, score, cross_volume, 'ok')
+    return dest
+
+
+def flag_borrow_candidates(keeper_ini_fields, keeper_video_meta, loser_ini_fields, loser_video_meta):
+    """Report-only: flag things a loser has that the keeper lacks.
+
+    Never acts on these -- purely informational so the user can decide
+    whether a manual merge is worth doing before deleting the loser (e.g. a
+    Pro Drums track, a set difficulty rating, a background video the keeper
+    doesn't have). Never writes to any chart/song.ini/audio file.
+    """
+    flags = []
+    for key in DIFF_KEYS:
+        keeper_has = keeper_ini_fields.get(key, -1) != -1
+        loser_has = loser_ini_fields.get(key, -1) != -1
+        if loser_has and not keeper_has:
+            flags.append(f'{key} (loser has it, keeper does not)')
+
+    if loser_video_meta.get('video_status') == 'present' and keeper_video_meta.get('video_status') != 'present':
+        flags.append('video background (loser has it, keeper does not)')
+
+    return flags

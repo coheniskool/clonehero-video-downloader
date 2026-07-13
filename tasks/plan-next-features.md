@@ -226,7 +226,7 @@ Every open question flagged below is meant to be resolved (a real decision made 
   - Verify: `pytest tests/test_dedupe_scoring.py -v`, including the all-`needs_review`/unscanned-group fixture
   - Files: `dedupe_scoring.py`, `tests/test_dedupe_scoring.py`
 
-> **Resolve first (open question, `SPEC-duplicate-detection.md`):** `_duplicates_review`'s folder-naming/collision strategy — flat vs. grouped-by-original-title subfolders — if a naming collision case comes up in the real duplicate groups found by Task 10/11. Decide before Task 13 implements the move logic, not while handling the first real collision.
+> **RESOLVED**: flat structure, `[dupN]` suffix on name collision — reusing the exact same, already-shipped-and-tested pattern `move_to_needs_review()` (`clonehero_video_offset.py`, Task 4) uses for `_needs_review/`, for cross-feature consistency and because it's a proven mechanism, not a new design.
 
 - [ ] **Task 13**: Same-volume/cross-volume-aware move to `_duplicates_review`, manifest logging, resumability, borrow-candidate flagging (M)
   - Acceptance: same-volume moves use direct atomic rename; cross-volume moves verify destination completeness (size/count or checksum) before removing the source; every move (either case) is logged to a manifest (source, destination, score, reason, volume-crossing, verification result); already-resolved groups are skipped on rerun; borrow-candidate flags logged only, never acted on; `--dry-run` touches zero files; collision strategy from above is implemented.
