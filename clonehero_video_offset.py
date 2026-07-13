@@ -234,6 +234,83 @@ def verify_chart_content_match(song_dir, ini_fields):
     return True, ''
 
 
+#Complete reserved stem-role set per the canonical chart-format reference
+#(https://thenathannator.github.io/GuitarGame_ChartFormats/Chart-File-Formats/
+#Supported-Audio-Files/, linked from the official Clone Hero wiki) -- an
+#earlier draft of this check only had song/guitar/rhythm/bass/drums(_1-4)/
+#vocals/keys/crowd, missing preview and the vocals_* family.
+STEM_ROLES = (
+    'preview', 'song', 'guitar', 'rhythm', 'bass', 'keys', 'crowd',
+    'drums', 'drums_1', 'drums_2', 'drums_3', 'drums_4',
+    'vocals', 'vocals_1', 'vocals_2',
+    'vocals_explicit', 'vocals_explicit_1', 'vocals_explicit_2',
+)
+AUDIO_STEM_EXTENSIONS = ('.ogg', '.mp3', '.wav', '.opus')
+
+
+def _match_stem_role(file_stem):
+    """Return (role, is_id_suffixed) for a filename stem, or (None, None).
+
+    Two passes so a filename like "vocals_1.ogg" is recognized as a literal
+    match for the reserved role "vocals_1" (a real harmony-vocals stem) rather
+    than mistakenly parsed as role "vocals" with numeric ID "1".
+    """
+    lowered = file_stem.lower()
+    for role in STEM_ROLES:
+        if lowered == role:
+            return role, False
+    for role in STEM_ROLES:
+        prefix = role + '_'
+        if lowered.startswith(prefix) and lowered[len(prefix):].isdigit():
+            return role, True
+    return None, None
+
+
+def scan_song_folder_audio_stems(song_dir):
+    """Classify each recognized audio-stem role's naming state in a folder.
+
+    Returns {'status': ..., 'detail': ...}. Statuses: 'ok' (every present role
+    has exactly one literally-named file, or no audio at all -- absence isn't
+    this check's concern), 'rename_candidate' (one or more roles each have
+    exactly one ID-suffixed candidate and nothing else -- safe to rename,
+    weak verification since there's no embedded metadata to check against),
+    'needs_review' (a role has multiple candidate files, literal+ID-suffixed
+    both present for the same role, or unrecognized ambiguity -- never
+    auto-picked; this is the real Kryptonite shape: four guitar candidates,
+    two rhythm candidates, two conflicting drum-mixing conventions).
+
+    A real 2026-07-14 census found 1,083 of 5,130 real library folders (~21%)
+    missing a literal song.* file; 250 of those (~5% of the library) have
+    multiple conflicting candidates -- this isn't a rare edge case.
+    """
+    by_role = {}
+    for path in song_dir.iterdir():
+        if not path.is_file() or path.suffix.lower() not in AUDIO_STEM_EXTENSIONS:
+            continue
+        role, is_id_suffixed = _match_stem_role(path.stem)
+        if role is None:
+            continue
+        by_role.setdefault(role, []).append((path, is_id_suffixed))
+
+    ambiguous_roles = {role: files for role, files in by_role.items() if len(files) > 1}
+    if ambiguous_roles:
+        detail = '; '.join(
+            f'{role}: {", ".join(p.name for p, _ in files)}'
+            for role, files in sorted(ambiguous_roles.items())
+        )
+        return {'status': 'needs_review', 'detail': detail}
+
+    rename_candidates = {
+        role: files[0][0] for role, files in by_role.items()
+        if files[0][1]  # the sole candidate is ID-suffixed
+    }
+    if rename_candidates:
+        detail = ', '.join(f'{role}: {path.name}' for role, path in sorted(rename_candidates.items()))
+        return {'status': 'rename_candidate', 'detail': detail}
+
+    return {'status': 'ok', 'detail': ''}
+
+
 def probe_frame_rate(video_path):
     #Variable Frame Rate (VFR) source video causes progressive, cumulative audio/video
     #desync that a single static video_start_time offset cannot fix -- it only corrects
