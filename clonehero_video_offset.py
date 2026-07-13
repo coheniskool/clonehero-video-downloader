@@ -311,6 +311,58 @@ def scan_song_folder_audio_stems(song_dir):
     return {'status': 'ok', 'detail': ''}
 
 
+#Album art is expected in the track-selection screen but never blocks
+#loading a song the way a missing chart/audio file does -- confirmed via
+#the official wiki ("Other Custom Content"). Zero candidates is a valid,
+#non-blocking outcome, unlike scan_song_folder_audio_stems().
+ALBUM_ART_EXTENSIONS = ('.png', '.jpg', '.jpeg')
+
+
+def scan_song_folder_album_art(song_dir):
+    """Classify album-art naming state: literal 'album.{png,jpg,jpeg}'.
+
+    Returns {'status': ..., 'detail': ...}. Statuses: 'ok' (a literal match
+    exists, or none at all -- album art isn't hard-required), 'rename_candidate'
+    (exactly one ID-suffixed candidate and nothing else -- safe to rename, no
+    embedded metadata to verify against), 'needs_review' (multiple candidates,
+    or a literal name coexisting with an ID-suffixed one -- never auto-picked).
+
+    Real folders (Kryptonite: album_827.png, Mr. Roboto: album_822.jpg, You
+    Only Live Once: album_525.jpg) show this is the same generating bug that
+    produces ID-suffixed song.ini/notes.chart/notes.mid, just hitting a file
+    type this spec originally missed.
+    """
+    candidates = []
+    for ext in ALBUM_ART_EXTENSIONS:
+        for path in song_dir.glob('album*' + ext):
+            stem = path.stem.lower()
+            if stem == 'album' or (stem.startswith('album_') and stem[len('album_'):].isdigit()):
+                candidates.append(path)
+
+    if len(candidates) > 1:
+        detail = ', '.join(p.name for p in sorted(candidates, key=lambda p: p.name))
+        return {'status': 'needs_review', 'detail': detail}
+
+    if not candidates:
+        return {'status': 'ok', 'detail': ''}
+
+    sole = candidates[0]
+    if sole.stem.lower() == 'album':
+        return {'status': 'ok', 'detail': sole.name}
+    return {'status': 'rename_candidate', 'detail': sole.name}
+
+
+def is_sng_packaged(song_dir):
+    """True if the folder contains a .sng single-file chart container.
+
+    Clone Hero's newer .sng format bundles and replaces the loose-file
+    structure entirely -- "cannot be edited manually" per the official wiki.
+    Callers must skip all rename/verification checks for such a folder;
+    there's nothing loose to verify or rename.
+    """
+    return any(song_dir.glob('*.sng'))
+
+
 def probe_frame_rate(video_path):
     #Variable Frame Rate (VFR) source video causes progressive, cumulative audio/video
     #desync that a single static video_start_time offset cannot fix -- it only corrects
