@@ -92,7 +92,7 @@ CANONICAL_VIDEO_NAMES = {"video.mp4", "video.avi", "video.webm", "video.ogv"}
 _YTDLP_FRAGMENT_RE = re.compile(r"\.f\d+\.|\.part$|\.ytdl$|\.temp\.", re.IGNORECASE)
 
 try:
-    from clonehero_video_offset import extract_audio, compute_offset, find_song_audio, find_video_file, probe_frame_rate, probe_video_codec, reencode_to_cfr, scan_and_fix_chart_library, read_song_ini_fields
+    from clonehero_video_offset import extract_audio, compute_offset, find_song_audio, find_song_ini, find_video_file, probe_frame_rate, probe_video_codec, reencode_to_cfr, scan_and_fix_chart_library, read_song_ini_fields
     OFFSET_SUPPORT = True
 except ImportError as exc:
     OFFSET_SUPPORT = False
@@ -362,14 +362,77 @@ def load_existing_video_confidence(song_folder: str) -> int | None:
         return None
 
 
-def save_video_metadata(song_folder: str, confidence: int, url: str) -> None:
+#Real evidence (2026-07-14): "Weezer - My Name Is Jonas (2024 Remaster)" and
+#"My Chemical Romance - Helena [Official Music Video - 4K Film Restored]" both
+#produced offsets of 60-90% of the song's own length -- a remaster/restoration
+#is very likely re-timed from the original release the chart's backing track
+#was built against, which a simple linear time-shift can't reconcile. This
+#doesn't fix the underlying cross-correlation limitation, but flags the risk
+#before a confidently-wrong offset gets written.
+_EDITION_MARKER_RE = re.compile(
+    r"\b(remaster(?:ed)?|restored|extended(?:\s+edition)?|director'?s?\s*cut|"
+    r"\d*\w*\s*anniversary\s*edition|special\s*edition|alternate\s*(?:version|cut|take)|"
+    r"redux|reissue)\b",
+    re.IGNORECASE,
+)
+
+
+def detect_edition_marker(title: str | None) -> str | None:
+    """Return the matched edition-marker keyword (lowercased) if a video title
+    suggests a different cut/timing than a plain official video, else None."""
+    if not title:
+        return None
+    match = _EDITION_MARKER_RE.search(title)
+    return match.group(1).lower() if match else None
+
+
+def save_video_metadata(song_folder: str, confidence: int, url: str, title: str | None = None) -> None:
     """Persist metadata for the downloaded video so future runs can decide whether to replace it."""
     metadata_path = Path(song_folder) / VIDEO_METADATA_FILENAME
     metadata = {
         "confidence": confidence,
         "url": url,
     }
+    if title is not None:
+        metadata["title"] = title
+        edition_flag = detect_edition_marker(title)
+        if edition_flag:
+            metadata["edition_flag"] = edition_flag
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+
+def load_edition_flag(song_folder: str) -> str | None:
+    """Return the persisted edition-marker flag for a folder's downloaded video, if any."""
+    metadata_path = Path(song_folder) / VIDEO_METADATA_FILENAME
+    if not metadata_path.exists():
+        return None
+    try:
+        with metadata_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data.get("edition_flag")
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+#Real evidence (2026-07-14): three Test-library songs computed offsets of
+#-145632ms/-306032ms/-153840ms against song lengths of 207619/338000/206600ms
+#-- 60-90% of the song's own length -- with confidence scores (3.3-6.2) that
+#otherwise clear the acceptance threshold. When video and song durations are
+#close, a genuine sync offset should be a small fraction of the song length
+#(a few seconds of intro/outro padding), not the majority of it.
+MAX_PLAUSIBLE_OFFSET_FRACTION = 0.3
+
+
+def is_offset_magnitude_plausible(offset_ms: int, song_length_ms: int | None) -> bool:
+    """False if the offset's magnitude exceeds MAX_PLAUSIBLE_OFFSET_FRACTION of the song length.
+
+    Never blocks when song_length_ms is missing/zero -- nothing to sanity-check
+    against, so this guardrail simply doesn't apply rather than failing closed
+    on incomplete data.
+    """
+    if not song_length_ms or song_length_ms <= 0:
+        return True
+    return abs(offset_ms) <= MAX_PLAUSIBLE_OFFSET_FRACTION * song_length_ms
 
 
 #Offset statuses that represent a completed, meaningful attempt -- re-running against
@@ -377,7 +440,10 @@ def save_video_metadata(song_folder: str, confidence: int, url: str) -> None:
 #these are skipped on rerun. "error" is deliberately excluded: it represents an
 #unexpected failure (ffmpeg crash, transient I/O error, etc.) that may not recur,
 #so it's always retried on the next run.
-SETTLED_OFFSET_STATUSES = ("written", "low_confidence", "no_reference_audio", "vfr_exceeds_window")
+SETTLED_OFFSET_STATUSES = (
+    "written", "low_confidence", "no_reference_audio", "vfr_exceeds_window",
+    "implausible_magnitude", "edition_mismatch_risk",
+)
 
 
 def load_offset_metadata(song_folder: str) -> dict | None:
@@ -1068,6 +1134,42 @@ def apply_audio_offset(song_folder: str, dry_run: bool = False) -> bool:
             return False
 
         offset_ms = result["offset_ms"]
+
+        #Sanity-check the magnitude before trusting a confident-looking result --
+        #real evidence (2026-07-14): three songs computed offsets of 60-90% of
+        #their own song length, at confidences (3.3-6.2) that otherwise clear the
+        #acceptance threshold. Recomputing from scratch gave byte-identical
+        #results, so this is a deterministic but spurious cross-correlation
+        #match, not noise.
+        ini_song_length = read_song_ini_fields(find_song_ini(folder), ('song_length',)) if find_song_ini(folder) else {}
+        song_length_ms = None
+        try:
+            song_length_ms = int(ini_song_length.get('song_length')) if ini_song_length.get('song_length') else None
+        except ValueError:
+            song_length_ms = None
+
+        if not is_offset_magnitude_plausible(offset_ms, song_length_ms):
+            print(
+                f"  Skipping offset detection: computed offset {offset_ms}ms is implausibly large "
+                f"relative to song length {song_length_ms}ms (confidence={result['confidence_ratio']:.2f}) -- needs manual review"
+            )
+            if not dry_run:
+                save_offset_metadata(song_folder, offset_ms=offset_ms, confidence=result["confidence_ratio"], status="implausible_magnitude")
+            return False
+
+        #Real evidence: "2024 Remaster" and "4K Film Restored" videos were both
+        #in this implausible-magnitude set -- a re-edit/remaster is very likely
+        #re-timed from the release the chart's own audio was built against.
+        edition_flag = load_edition_flag(song_folder)
+        if edition_flag:
+            print(
+                f"  Skipping offset detection: downloaded video title suggests a '{edition_flag}' edition "
+                f"-- may not time-align with the chart's audio, needs manual review"
+            )
+            if not dry_run:
+                save_offset_metadata(song_folder, offset_ms=offset_ms, confidence=result["confidence_ratio"], status="edition_mismatch_risk")
+            return False
+
         if dry_run:
             print(f"  [dry-run] Would set video_start_time = {offset_ms} (confidence={result['confidence_ratio']:.2f}) -- not written.")
             return False
@@ -1219,7 +1321,7 @@ def prompt_confidence_threshold(
             print("Please enter a valid number.")
 
 
-def download_video_if_needed(url: str, currentSongFileFolder: str, candidate_confidence: int | None) -> bool:
+def download_video_if_needed(url: str, currentSongFileFolder: str, candidate_confidence: int | None, title: str | None = None) -> bool:
     """Download a video into a song folder and save metadata if successful."""
     #Force codec-compatible pairs so yt-dlp merges into video.mp4 or video.webm --
     #never a mismatched mp4-video/opus-audio pair, which yt-dlp can only hold in .mkv
@@ -1247,7 +1349,7 @@ def download_video_if_needed(url: str, currentSongFileFolder: str, candidate_con
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         if candidate_confidence is not None:
-            save_video_metadata(currentSongFileFolder, candidate_confidence, url)
+            save_video_metadata(currentSongFileFolder, candidate_confidence, url, title=title)
         return True
     except Exception as e:
         print(f"  ERROR: Download failed for {currentSongFileFolder}: {e}")
@@ -1657,7 +1759,11 @@ def main() -> None:
                     continue
                 print(f"  Existing video found with lower confidence ({existing_confidence}); replacing it with a higher-confidence match ({candidate_confidence}).")
 
-            if download_video_if_needed(url, currentSongFileFolder, candidate_confidence):
+            #best_match is None for spreadsheet-sourced URLs (no search candidate
+            #to pull a title from) -- the edition-marker check simply doesn't
+            #apply in that case, which is a safe/graceful fallback.
+            candidate_title = item['best_match']['title'] if item['best_match'] else None
+            if download_video_if_needed(url, currentSongFileFolder, candidate_confidence, title=candidate_title):
                 downloaded += 1
                 print(f"Downloaded video for: {item['folder']}\n")
             else:
@@ -1699,11 +1805,13 @@ def main() -> None:
                 print(f"Confidence: {item['confidence']}/100 ({item['best_match']['reason']})")
                 print(f"URL: {item['url']}")
                 print()
+                chosen_title = None
                 while True:
                     user_choice = input("  Download this video? (y=yes, n=skip, 1-3=pick different result, url=enter custom URL): ").strip().lower()
                     if user_choice == 'y':
                         chosen_url = item['url']
                         chosen_confidence = item['confidence']
+                        chosen_title = item['best_match']['title'] if item['best_match'] else None
                         break
                     elif user_choice == 'n':
                         print(f"  Skipping: {item['folder']}")
@@ -1717,6 +1825,7 @@ def main() -> None:
                             chosen = item['candidates'][idx]
                             chosen_url = chosen['url']
                             chosen_confidence = chosen['confidence']
+                            chosen_title = chosen['title']
                             print(f"  Using: {chosen['title']}")
                             break
                         else:
@@ -1726,6 +1835,7 @@ def main() -> None:
                         if 'youtube.com/watch' in custom_url or 'youtu.be/' in custom_url:
                             chosen_url = custom_url
                             chosen_confidence = 100
+                            chosen_title = None  # no title known for a manually entered URL
                             print(f"  Using custom URL: {custom_url}")
                             break
                         else:
@@ -1755,7 +1865,7 @@ def main() -> None:
                         continue
                     print(f"  Existing video found with lower confidence ({existing_confidence}); replacing it with a higher-confidence match ({chosen_confidence}).")
 
-                if download_video_if_needed(chosen_url, item['song_folder'], chosen_confidence):
+                if download_video_if_needed(chosen_url, item['song_folder'], chosen_confidence, title=chosen_title):
                     downloaded += 1
                     print(f"Downloaded video for: {item['folder']}\n")
                 else:
