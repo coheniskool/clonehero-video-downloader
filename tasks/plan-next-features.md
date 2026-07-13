@@ -188,7 +188,7 @@ Every open question flagged below is meant to be resolved (a real decision made 
   - Verify: `pytest tests/test_chorus_field_sanitization.py tests/test_metadata_ini_patch.py -v`
   - Files: `CH-VideoScript.py` (or new module), both test files
 
-> **Resolve first (open question, `SPEC-chorus-metadata.md`):** exact field list to fill (this spec assumes `year`/`genre`/`charter`/`album` — widen it or not?) and the match-confidence threshold for "confident enough to apply" a Chorus result. Decide and record in the spec before Task 8 writes any files.
+> **RESOLVED**: field list stays `year`/`genre`/`charter`/`album` — no reason to widen, and all four are confirmed real response fields (Task 0). Match-confidence threshold: **70** (`SequenceMatcher` ratio*100 on normalized name+artist, both must clear it — reusing the same `normalize_lookup_value`/`SequenceMatcher` pattern already in the project). Set lower than chart-rename's 85 because a wrong metadata fill (a slightly-off genre/year) is far less destructive than a bad file rename — matches the project's existing "70-89: high confidence" band for the YouTube-match use case, a comparably low-stakes decision.
 
 - [ ] **Task 8**: `fill_song_ini_metadata()` + `enrich_song_ini_metadata_library()` (per-item logging + aggregate summary) + confidence threshold (M)
   - Acceptance: every song's outcome (`filled`/`no_change`/`no_match`/`error`) is logged with a reason; an aggregate summary prints at the end of a library run, mirroring `scan_and_fix_video_library()`'s/`scan_and_fix_chart_library()`'s reporting contract; confidence threshold decided above is implemented as written.

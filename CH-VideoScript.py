@@ -2,6 +2,8 @@
 from __future__ import unicode_literals
 import yt_dlp
 
+import chorus_client
+
 import argparse
 import csv
 import io
@@ -90,7 +92,7 @@ CANONICAL_VIDEO_NAMES = {"video.mp4", "video.avi", "video.webm", "video.ogv"}
 _YTDLP_FRAGMENT_RE = re.compile(r"\.f\d+\.|\.part$|\.ytdl$|\.temp\.", re.IGNORECASE)
 
 try:
-    from clonehero_video_offset import extract_audio, compute_offset, find_song_audio, find_video_file, probe_frame_rate, probe_video_codec, reencode_to_cfr, scan_and_fix_chart_library
+    from clonehero_video_offset import extract_audio, compute_offset, find_song_audio, find_video_file, probe_frame_rate, probe_video_codec, reencode_to_cfr, scan_and_fix_chart_library, read_song_ini_fields
     OFFSET_SUPPORT = True
 except ImportError as exc:
     OFFSET_SUPPORT = False
@@ -898,6 +900,116 @@ def patch_song_ini_keys(song_folder: str, updates: dict[str, str]) -> Path | Non
             os.remove(tmp_path)
         raise
     return target
+
+
+#Fields this feature will fill -- confirmed real Chorus Encore response fields
+#(sourced from Bridge's actual source, Task 0 of SPEC-chorus-metadata.md), not
+#guessed. Widening this list is a deliberate "ask first" decision, not a default.
+CHORUS_FILLABLE_KEYS = ("year", "genre", "charter", "album")
+
+#SequenceMatcher ratio*100 on normalized name+artist, both required -- lower
+#than chart-rename's 85 because a wrong metadata fill (a slightly-off genre or
+#year) is far less destructive than a bad file rename. Matches the project's
+#existing "70-89: high confidence" band for the comparably low-stakes
+#YouTube-match use case.
+CHORUS_MATCH_CONFIDENCE_THRESHOLD = 70
+
+
+def _chorus_match_confidence(ini_fields: dict[str, str], chorus_result: dict) -> float:
+    """Return the weaker of the name/artist SequenceMatcher scores (0-100)."""
+    name_score = SequenceMatcher(
+        None, normalize_lookup_value(ini_fields.get("name")), normalize_lookup_value(chorus_result.get("name"))
+    ).ratio() * 100
+    artist_score = SequenceMatcher(
+        None, normalize_lookup_value(ini_fields.get("artist")), normalize_lookup_value(chorus_result.get("artist"))
+    ).ratio() * 100
+    return min(name_score, artist_score)
+
+
+def fill_song_ini_metadata(song_folder: str, dry_run: bool = False) -> dict[str, str]:
+    """Look up a song on Chorus Encore and fill blank song.ini fields from a confident match.
+
+    Returns {'status': ..., 'detail': ...}. Statuses: 'filled' (>=1 field
+    written), 'no_change' (song.ini already complete, or Chorus had nothing
+    safe/new to add), 'no_match' (no Chorus result, or the best result's
+    confidence is below CHORUS_MATCH_CONFIDENCE_THRESHOLD), 'error' (no
+    song.ini found, or it's missing name/artist to look up by).
+
+    dry_run=True computes the same outcome without writing anything.
+    """
+    folder = Path(song_folder)
+    ini_files = sorted(folder.glob("*.ini"))
+    if not ini_files:
+        return {"status": "error", "detail": "no song.ini found"}
+    target = next((p for p in ini_files if p.name.lower() == "song.ini"), ini_files[0])
+
+    ini_fields = read_song_ini_fields(target, ("name", "artist") + CHORUS_FILLABLE_KEYS)
+    if not ini_fields.get("name") or not ini_fields.get("artist"):
+        return {"status": "error", "detail": "song.ini missing name/artist, cannot look up"}
+
+    chorus_result = chorus_client.search_by_artist_title(ini_fields["artist"], ini_fields["name"])
+    if chorus_result is None:
+        return {"status": "no_match", "detail": "no Chorus result found"}
+
+    confidence = _chorus_match_confidence(ini_fields, chorus_result)
+    if confidence < CHORUS_MATCH_CONFIDENCE_THRESHOLD:
+        return {
+            "status": "no_match",
+            "detail": f"best match confidence {confidence:.0f} below threshold {CHORUS_MATCH_CONFIDENCE_THRESHOLD}",
+        }
+
+    to_fill = {}
+    for key in CHORUS_FILLABLE_KEYS:
+        if ini_fields.get(key):
+            continue
+        safe_value = sanitize_chorus_field(chorus_result.get(key))
+        if safe_value is not None:
+            to_fill[key] = safe_value
+
+    if not to_fill:
+        return {"status": "no_change", "detail": "no fillable blank fields, or no safe values"}
+
+    if not dry_run:
+        patch_song_ini_keys(str(folder), to_fill)
+    detail = ", ".join(sorted(to_fill))
+    if dry_run:
+        detail += " (dry-run, not applied)"
+    return {"status": "filled", "detail": detail}
+
+
+def enrich_song_ini_metadata_library(home_folder: str, dry_run: bool = False) -> None:
+    """Scan every song folder under home_folder and fill blank metadata from Chorus Encore.
+
+    Mirrors scan_and_fix_video_library()'s/scan_and_fix_chart_library()'s
+    aggregate/summary style -- logs every song's outcome with a reason, never
+    silently skips one.
+    """
+    print("=" * 70)
+    print("ENRICHING SONG METADATA FROM CHORUS ENCORE" + (" (DRY RUN)" if dry_run else ""))
+    print("=" * 70)
+
+    counts: dict[str, int] = {}
+    for folder in sorted(Path(home_folder).iterdir()):
+        if not folder.is_dir() or folder.name in ("_needs_review", "_duplicates_review"):
+            continue
+
+        result = fill_song_ini_metadata(str(folder), dry_run=dry_run)
+        counts[result["status"]] = counts.get(result["status"], 0) + 1
+
+        if result["status"] == "filled":
+            print(f"  Filled: {folder.name}: {result['detail']}")
+        elif result["status"] == "error":
+            print(f"  ERROR: {folder.name}: {result['detail']}")
+
+    print()
+    print(
+        f"Enrichment complete: {counts.get('filled', 0)} filled, "
+        f"{counts.get('no_change', 0)} no change needed, "
+        f"{counts.get('no_match', 0)} no confident match, "
+        f"{counts.get('error', 0)} error(s)."
+    )
+    print("=" * 70)
+    print()
 
 
 def apply_audio_offset(song_folder: str, dry_run: bool = False) -> bool:

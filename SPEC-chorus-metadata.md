@@ -174,9 +174,9 @@ Same philosophy as the rest of the project: `song.ini` mutation is the real corr
   - Support `--dry-run` so planned fills can be reviewed before any file is touched
   - Degrade gracefully on a Chorus API failure or no-match — skip that song, never abort the run (mirrors `SPEC-duplicate-detection.md`'s "must not raise" contract for `chorus_client.py`)
 
-- **Ask first**:
-  - Exact field list to fill (this spec assumes `year`/`genre`/`charter`/`album`; widening it is a judgment call for `/plan`)
-  - Match-confidence threshold for "confident enough to apply" a Chorus result
+- **Always** (continued, resolved 2026-07-14 before Task 8):
+  - Fill exactly `year`/`genre`/`charter`/`album` — no wider, all four confirmed real response fields (Task 0)
+  - Require a match-confidence score of **≥ 70** (`SequenceMatcher` ratio*100 on normalized name+artist, both fields) before applying any Chorus result — lower than chart-rename's 85 since a wrong metadata fill is far less destructive than a bad file rename, matching the project's existing "high confidence" band
 
 - **Never**:
   - Never overwrite an existing `song.ini` value, for any field
@@ -196,4 +196,4 @@ Same philosophy as the rest of the project: `song.ini` mutation is the real corr
 
 ## Open Questions
 
-- Exact field list (this spec assumes `year`/`genre`/`charter`/`album`, all confirmed real response fields — see Tech Stack) and match-confidence threshold — needs a concrete proposal at `/plan`/Task 8, informed by real query results now that the schema is confirmed.
+- **RESOLVED (2026-07-14, before Task 8)**: field list is `year`/`genre`/`charter`/`album` (unchanged, all confirmed real fields); match-confidence threshold is 70 (`SequenceMatcher` ratio*100 on name+artist, both required). See Boundaries.
