@@ -153,36 +153,84 @@ def read_chart_song_fields(chart_path):
     return fields
 
 
+#Standard MIDI files carry no equivalent human-readable song-name text chunk
+#Clone Hero charts reliably populate, so .mid folders fall back to comparing
+#the paired audio's real duration against song.ini's song_length (ms).
+MID_DURATION_TOLERANCE_MS = 2000
+
+
+def probe_audio_duration_ms(audio_path):
+    """Return an audio file's duration in milliseconds via ffprobe, or None on failure."""
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'json', str(audio_path)],
+            check=True, capture_output=True, text=True,
+        )
+        data = json.loads(result.stdout)
+        duration = data.get('format', {}).get('duration')
+        if duration is None:
+            return None
+        return round(float(duration) * 1000)
+    except Exception as e:
+        logging.error(f"ffprobe duration probe error {audio_path}: {e}")
+        return None
+
+
 def verify_chart_content_match(song_dir, ini_fields):
-    """Fuzzy-verify a .chart file's embedded Name/Artist against song.ini.
+    """Fuzzy-verify a chart file's content against song.ini.
 
-    Returns (matched, reason). Both Name and Artist must independently score
-    >= CHART_NAME_MATCH_THRESHOLD (SequenceMatcher ratio*100) -- an OR check
-    would wrongly pass the real Mr. Roboto case, where Artist matches ("Styx")
-    but Name is a completely different song ("Rock & Roll Feeling").
-
-    .mid verification (no embedded text metadata to compare) is a separate
-    duration-based fallback -- see Task 3, not handled here.
+    Returns (matched, reason). For a .chart file: both Name and Artist must
+    independently score >= CHART_NAME_MATCH_THRESHOLD (SequenceMatcher
+    ratio*100) -- an OR check would wrongly pass the real Mr. Roboto case,
+    where Artist matches ("Styx") but Name is a completely different song
+    ("Rock & Roll Feeling"). For a .mid file (no embedded text metadata to
+    compare), falls back to comparing the paired audio's real duration
+    against song.ini's song_length, within MID_DURATION_TOLERANCE_MS.
     """
     chart_files = sorted(song_dir.glob('*.chart'))
-    if not chart_files:
-        return False, 'no .chart file found to verify against'
+    if chart_files:
+        chart_fields = read_chart_song_fields(chart_files[0])
+        if not chart_fields:
+            return False, f'{chart_files[0].name}: no Name/Artist fields found'
 
-    chart_fields = read_chart_song_fields(chart_files[0])
-    if not chart_fields:
-        return False, f'{chart_files[0].name}: no Name/Artist fields found'
+        scores = {}
+        for key in ('name', 'artist'):
+            chart_value = _normalize_for_match(chart_fields.get(key))
+            ini_value = _normalize_for_match(ini_fields.get(key))
+            scores[key] = round(SequenceMatcher(None, chart_value, ini_value).ratio() * 100)
 
-    scores = {}
-    for key in ('name', 'artist'):
-        chart_value = _normalize_for_match(chart_fields.get(key))
-        ini_value = _normalize_for_match(ini_fields.get(key))
-        scores[key] = round(SequenceMatcher(None, chart_value, ini_value).ratio() * 100)
+        failing = [key for key, score in scores.items() if score < CHART_NAME_MATCH_THRESHOLD]
+        if failing:
+            detail = ', '.join(f'{key} score {scores[key]}' for key in failing)
+            return False, f'{chart_files[0].name}: {detail} below threshold {CHART_NAME_MATCH_THRESHOLD}'
+        return True, ''
 
-    failing = [key for key, score in scores.items() if score < CHART_NAME_MATCH_THRESHOLD]
-    if failing:
-        detail = ', '.join(f'{key} score {scores[key]}' for key in failing)
-        return False, f'{chart_files[0].name}: {detail} below threshold {CHART_NAME_MATCH_THRESHOLD}'
+    mid_files = sorted(song_dir.glob('*.mid'))
+    if not mid_files:
+        return False, 'no .chart or .mid file found to verify against'
 
+    song_length_raw = ini_fields.get('song_length')
+    if not song_length_raw:
+        return False, 'song.ini has no song_length to compare against'
+    try:
+        expected_ms = int(str(song_length_raw).strip())
+    except ValueError:
+        return False, f'song.ini song_length {song_length_raw!r} is not numeric'
+
+    audio_path = find_song_audio(song_dir)
+    if audio_path is None:
+        return False, 'no audio file found to probe duration against'
+
+    actual_ms = probe_audio_duration_ms(audio_path)
+    if actual_ms is None:
+        return False, f'{audio_path.name}: ffprobe could not determine duration'
+
+    diff_ms = abs(actual_ms - expected_ms)
+    if diff_ms > MID_DURATION_TOLERANCE_MS:
+        return False, (
+            f'{mid_files[0].name}: audio duration {actual_ms}ms differs from '
+            f'song_length {expected_ms}ms by {diff_ms}ms, exceeds tolerance {MID_DURATION_TOLERANCE_MS}ms'
+        )
     return True, ''
 
 
