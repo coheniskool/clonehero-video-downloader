@@ -987,9 +987,12 @@ def download_video_if_needed(url: str, currentSongFileFolder: str, candidate_con
     #never a mismatched mp4-video/opus-audio pair, which yt-dlp can only hold in .mkv
     #(Clone Hero doesn't recognize .mkv, and a literal "video.mp4" outtmpl lets
     #yt-dlp tack the real extension on top of it, producing "video.mp4.mkv"/"video.mp4.webm").
+    #WebM is preferred over MP4: Clone Hero's own wiki recommends it for cross-platform
+    #stability, and the game itself warns at startup that MP4 video backgrounds "wont
+    #work on all game platforms" (Linux/Mac builds only recognize .webm/.ogv).
     ydl_opts = {
         'outtmpl': os.path.join(currentSongFileFolder, 'video.%(ext)s'),
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=mp4]/best',
+        'format': 'bestvideo[ext=webm]+bestaudio[ext=webm]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=webm]/best',
         'overwrites': False,
         'noplaylist': 1,
     }
