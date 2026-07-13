@@ -797,6 +797,109 @@ def patch_song_ini(song_folder: str, offset_ms: int) -> Path | None:
     return target
 
 
+_UNSAFE_INI_CHARS_RE = re.compile(r"[\[\];#\r\n]")
+
+
+def sanitize_chorus_field(value: str | None) -> str | None:
+    """Reject a Chorus-sourced field value unless it's safe to splice into song.ini.
+
+    Chorus fields are spliced in via regex substitution, not parsed by
+    configparser -- an unsanitized value with a stray [, ], ;, #, or embedded
+    newline could corrupt the file or desync a later key. Rejects rather
+    than partially cleans, so a bad value never silently becomes a
+    different bad value. Returns None if the value is unsafe, non-string,
+    or empty after stripping; otherwise the stripped value, capped at 200
+    characters.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    if _UNSAFE_INI_CHARS_RE.search(value):
+        return None
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return value.strip()[:200]
+
+
+def patch_song_ini_keys(song_folder: str, updates: dict[str, str]) -> Path | None:
+    """Fill multiple song.ini keys in one atomic pass.
+
+    Generalizes patch_song_ini()'s byte-preserving regex + atomic-write
+    approach (which only ever touches video_start_time) to an arbitrary set
+    of keys. Every other line is preserved byte-for-byte, including the
+    file's existing CRLF-vs-LF convention. This function only performs the
+    mechanical patch -- deciding which keys are safe to fill (blank-only,
+    sanitized) is the caller's job (fill_song_ini_metadata()), matching
+    patch_song_ini()'s existing separation of concerns.
+    """
+    folder = Path(song_folder)
+    ini_files = sorted(folder.glob("*.ini"))
+    if not ini_files:
+        return None
+    target = next((path for path in ini_files if path.name.lower() == "song.ini"), ini_files[0])
+    if not updates:
+        return target
+
+    with open(target, "r", encoding="utf-8", errors="ignore", newline="") as f:
+        original = f.read()
+    line_ending = "\r\n" if "\r\n" in original else "\n"
+
+    lines = original.splitlines(keepends=True) if original.strip() else []
+    remaining = dict(updates)
+
+    for i, line in enumerate(lines):
+        if not remaining:
+            break
+        for key in list(remaining):
+            key_re = re.compile(r"^([ \t]*)" + re.escape(key) + r"([ \t]*=[ \t]*).*?(\r\n|\r|\n|$)", re.IGNORECASE)
+            match = key_re.match(line)
+            if match:
+                indent, equals, terminator = match.group(1), match.group(2), match.group(3)
+                lines[i] = "{indent}{key}{eq}{value}{term}".format(
+                    indent=indent, key=key, eq=equals, value=remaining.pop(key), term=terminator
+                )
+                break
+
+    if remaining:
+        insert_at = None
+        section_terminator = line_ending
+        for i, line in enumerate(lines):
+            match = _SONG_SECTION_LINE_RE.match(line)
+            if match:
+                insert_at = i + 1
+                section_terminator = match.group(1) or line_ending
+                break
+
+        new_lines = [
+            "{key} = {value}{term}".format(key=key, value=value, term=section_terminator)
+            for key, value in remaining.items()
+        ]
+        if insert_at is not None:
+            lines[insert_at:insert_at] = new_lines
+        else:
+            if lines and not lines[-1].endswith(("\n", "\r")):
+                lines[-1] += line_ending
+            lines.append("[Song]{le}".format(le=line_ending))
+            lines.extend(
+                "{key} = {value}{le}".format(key=key, value=value, le=line_ending)
+                for key, value in remaining.items()
+            )
+
+    new_content = "".join(lines)
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), suffix=".ini")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(new_content)
+        os.replace(tmp_path, target)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+    return target
+
+
 def apply_audio_offset(song_folder: str, dry_run: bool = False) -> bool:
     """Detect the audio/video sync offset for a freshly downloaded video and write it to the ini.
 
