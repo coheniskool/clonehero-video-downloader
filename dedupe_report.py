@@ -10,6 +10,7 @@
 # after stripping bracket-suffix noise like "[dup253]" -- common enough to
 # be worth this feature's scope, not a rare edge case.
 
+import argparse
 import importlib.util
 import json
 import logging
@@ -18,7 +19,8 @@ import shutil
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from clonehero_video_offset import find_song_audio
+import chorus_client
+from clonehero_video_offset import find_song_audio, find_video_file, read_song_ini_fields
 
 _REPO_ROOT = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location('ch_video_script_for_dedupe', _REPO_ROOT / 'CH-VideoScript.py')
@@ -353,3 +355,125 @@ def flag_borrow_candidates(keeper_ini_fields, keeper_video_meta, loser_ini_field
         flags.append('video background (loser has it, keeper does not)')
 
     return flags
+
+
+VIDEO_METADATA_FILENAME = 'video_meta.json'
+
+
+def _read_video_meta(song_dir):
+    metadata_path = Path(song_dir) / VIDEO_METADATA_FILENAME
+    if not metadata_path.exists():
+        return {}
+    try:
+        with metadata_path.open('r', encoding='utf-8') as handle:
+            return json.load(handle)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _build_score_inputs(song_dir):
+    """Translate raw video_meta.json + folder contents into score_folder()'s expected shape."""
+    raw_meta = _read_video_meta(song_dir)
+    video_meta = {
+        'video_status': 'present' if find_video_file(song_dir) is not None else 'no_video',
+        'offset_confidence': (raw_meta.get('offset') or {}).get('confidence', 0),
+        'chart_rename_status': raw_meta.get('chart_rename_status'),
+    }
+
+    ini_files = sorted(Path(song_dir).glob('*.ini'))
+    if not ini_files:
+        return video_meta, {}
+    ini_target = next((p for p in ini_files if p.name.lower() == 'song.ini'), ini_files[0])
+    ini_fields = read_song_ini_fields(ini_target, ('name', 'artist') + DIFF_KEYS + METADATA_KEYS)
+    return video_meta, ini_fields
+
+
+def generate_dedupe_report(home_folder, dry_run=False):
+    """Full library-wide dedupe pass: group, confirm, score, move losers, flag borrows.
+
+    Mirrors this project's established aggregate/summary style
+    (scan_and_fix_video_library()/scan_and_fix_chart_library()). Never
+    deletes anything -- losers are relocated intact to _duplicates_review/
+    for the user's own manual review.
+    """
+    home_folder = Path(home_folder)
+    song_folders = [f for f in home_folder.iterdir() if f.is_dir() and not f.name.startswith('_')]
+
+    print('=' * 70)
+    print('DUPLICATE SONG DETECTION' + (' (DRY RUN)' if dry_run else ''))
+    print('=' * 70)
+
+    candidate_groups = group_candidates(song_folders)
+    print(f"Found {len(candidate_groups)} candidate group(s) from {len(song_folders)} folder(s) (fuzzy match, pre-fingerprint).")
+    if acoustid is None:
+        print("WARNING: audio fingerprinting is unavailable (see dependency warning above) -- no group can be confirmed.")
+    print()
+
+    resolved = 0
+    skipped_all_ineligible = 0
+    skipped_not_confirmed = 0
+
+    for group in candidate_groups:
+        confirmed = confirm_group(group)
+        if len(confirmed) < 2:
+            skipped_not_confirmed += 1
+            continue
+
+        video_metas, ini_fields_map, scores, eligibility = {}, {}, {}, {}
+        for folder in confirmed:
+            video_meta, ini_fields = _build_score_inputs(folder)
+            chorus_data = None
+            if ini_fields.get('artist') and ini_fields.get('name'):
+                chorus_data = chorus_client.search_by_artist_title(ini_fields['artist'], ini_fields['name'])
+            score, _breakdown = score_folder(folder, video_meta, ini_fields, chorus_data)
+            video_metas[folder] = video_meta
+            ini_fields_map[folder] = ini_fields
+            scores[folder] = score
+            eligibility[folder] = is_keeper_eligible(video_meta)
+
+        keeper = select_keeper(confirmed, scores, eligibility)
+        if keeper is None:
+            skipped_all_ineligible += 1
+            print(f"  SKIPPED (every folder needs_review/unscanned): {[f.name for f in confirmed]}")
+            continue
+
+        print(f"  Keeper: {keeper.name} (score {scores[keeper]})")
+        for folder in confirmed:
+            if folder == keeper:
+                continue
+            flags = flag_borrow_candidates(ini_fields_map[keeper], video_metas[keeper], ini_fields_map[folder], video_metas[folder])
+            reason = f"lower score than keeper {keeper.name} ({scores[folder]} vs {scores[keeper]})"
+            if not dry_run:
+                move_to_duplicates_review(folder, home_folder, reason, scores[folder])
+            print(f"    Loser: {folder.name} -> _duplicates_review/ (score {scores[folder]})")
+            if flags:
+                print(f"      Borrow candidates: {', '.join(flags)}")
+        resolved += 1
+
+    print()
+    print(
+        f"Dedupe complete: {resolved} group(s) resolved, "
+        f"{skipped_all_ineligible} skipped (every folder needs_review/unscanned), "
+        f"{skipped_not_confirmed} skipped (fingerprint did not confirm a real duplicate)."
+    )
+    print('=' * 70)
+    print()
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Find and relocate duplicate Clone Hero song folders.")
+    parser.add_argument("--library-path", type=str, required=True, help="Path to your Clone Hero songs library folder.")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Compute groups/scores/flags and log them without moving any folder.",
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    generate_dedupe_report(args.library_path, dry_run=args.dry_run)
+
+
+if __name__ == '__main__':
+    main()
