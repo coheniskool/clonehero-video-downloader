@@ -274,6 +274,7 @@ This phase exists specifically to unblock `tasks/todo.md`'s long-pending Task 12
 - The `needs_review`-exclusion requirement in Task 12 is now a hard requirement (upgraded from this plan's original "soft dependency" framing) per the 2026-07-13 bridge briefing — see Context above.
 - Every open question called out with a `> **Resolve first**` block is meant to block its following task from starting, not just be noted and skipped past.
 - No task should require changing more than ~5 files; tasks are ordered by dependency, not perceived importance, per the spec-driven-development skill's task template.
+- **2026-07-17 addendum**: post-build manual QA of the 5 real Test-library songs found two real bugs in the pre-existing `compute_offset()`/`apply_audio_offset()` code (unrelated to this plan's own tasks) — deterministic-but-wrong offsets for videos that were actually "4K Film Restored"/"2024 Remaster" editions. Fixed with two new guardrails (`is_offset_magnitude_plausible()`, `detect_edition_marker()`/`load_edition_flag()`, commit `d80f189`), verified against real data. `video_start_time` reset to `0` for the 3 affected real folders as an interim placeholder. **User decided to defer finding replacement videos for these 3 songs until after Task 18's first real full-library run** — betting `dedupe_report.py` surfaces a better-scoring keeper elsewhere in the library rather than needing individual manual fixes. Revisit only if dedupe doesn't resolve it for these three specifically.
 
 ## Someday / Backlog
 
