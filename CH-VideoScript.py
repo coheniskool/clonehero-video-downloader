@@ -81,7 +81,13 @@ COOKIES_FROM_BROWSER = ("chrome",)
 #running (Chrome holds an exclusive lock on it) -- see
 #https://github.com/yt-dlp/yt-dlp/issues/7271. If set, this takes priority over
 #COOKIES_FROM_BROWSER so you don't have to keep your browser closed during a run.
-COOKIES_FILE = r"C:\Users\aaron\Downloads\chromewebstore.google.com_cookies.txt"
+COOKIES_FILE = None
+#Machine-specific overrides (e.g. your own COOKIES_FILE path) live in an untracked
+#local_config.py next to this script, so personal paths stay out of git.
+try:
+    from local_config import *  # noqa: F401,F403
+except ImportError:
+    pass
 
 #Clone Hero only recognizes a background video with exactly one of these
 #lowercase filenames sitting directly in the song folder.
